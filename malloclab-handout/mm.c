@@ -81,18 +81,18 @@ static char *heap_listp;  /* pointer to first block */
 static char *rover;       /* next fit rover */
 
 // list of places to possibly visit for the next block, based on the discontinuous places we have visited recently.
-static char *previousRoverSpots;
-static char *previousRoverSpots2;
-static char *previousRoverSpots3;
-static char *previousRoverSpots4;
-static char *previousRoverSpots5;
+static char* previousRoverSpots;
+static char* previousRoverSpots2;
+static char* previousRoverSpots3;
+static char* previousRoverSpots4;
+static char* previousRoverSpots5;
 
 static void updatePreviousRoverSpots(char* newRoverLocation) {
-    *previousRoverSpots5 = previousRoverSpots4;       /* next fit previousRoverSpots */
-    *previousRoverSpots4 = previousRoverSpots3;       /* next fit previousRoverSpots */
-    *previousRoverSpots3 = previousRoverSpots2;       /* next fit previousRoverSpots */
-    *previousRoverSpots2 = previousRoverSpots;       /* next fit previousRoverSpots */
-    *previousRoverSpots = newRoverLocation;       /* next fit previousRoverSpots */
+    previousRoverSpots5 = previousRoverSpots4;       /* next fit previousRoverSpots */
+    previousRoverSpots4 = previousRoverSpots3;       /* next fit previousRoverSpots */
+    previousRoverSpots3 = previousRoverSpots2;       /* next fit previousRoverSpots */
+    previousRoverSpots2 = previousRoverSpots;       /* next fit previousRoverSpots */
+    previousRoverSpots = newRoverLocation;       /* next fit previousRoverSpots */
 }
 #endif
 
@@ -291,17 +291,53 @@ static void *find_fit(size_t asize)
     /* next fit search */
     char *oldrover = rover;
 
+    if (previousRoverSpots5 != NULL && IS_ELIGIBLE_SPOT(previousRoverSpots5, asize)) {
+	// printf("\n\nYAT");
+	return previousRoverSpots5;
+    }
+    if (previousRoverSpots4 != NULL && IS_ELIGIBLE_SPOT(previousRoverSpots4, asize)) {
+	// printf("\n\nYAT");
+	return previousRoverSpots4;
+    }
+    if (previousRoverSpots2 != NULL && IS_ELIGIBLE_SPOT(previousRoverSpots2, asize)) {
+	// printf("\n\nYAT");
+	return previousRoverSpots2;
+    }
     // first, search the old rover locations, and see if there is 
+    if (previousRoverSpots != NULL && IS_ELIGIBLE_SPOT(previousRoverSpots, asize)) {
+	// printf("\n\nYAT");
+	return previousRoverSpots;
+    }
+    if (previousRoverSpots3 != NULL && IS_ELIGIBLE_SPOT(previousRoverSpots3, asize)) {
+	// printf("\n\nYAT");
+	return previousRoverSpots3;
+    }
+
+    char firstCheckFailed = 0;
     // a spot there where this spot could go.
     /* search from the rover to the end of list */
-    for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-	if (IS_ELIGIBLE_SPOT(rover, asize))
+    for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover)) {
+	if (IS_ELIGIBLE_SPOT(rover, asize)) {
+	    if(firstCheckFailed) {
+		// printf("YEDE");
+		updatePreviousRoverSpots(rover);
+	    }
 	    return rover;
+	}
+	firstCheckFailed = 1;
+    }
+    firstCheckFailed = 0;
 
     /* search from start of list to old rover */
-    for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
-	if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+    for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover)) {
+	if (IS_ELIGIBLE_SPOT(rover, asize)) {
+	    if(firstCheckFailed) {
+		updatePreviousRoverSpots(rover);
+	    }
 	    return rover;
+	}
+	firstCheckFailed = 1;
+    }
 
     return NULL;  /* no fit found */
 #else 
@@ -309,7 +345,7 @@ static void *find_fit(size_t asize)
     void *bp;
 
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-	if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+	if (IS_ELIGIBLE_SPOT(bp, asize)) {
 	    return bp;
 	}
     }
@@ -356,6 +392,16 @@ static void *coalesce(void *bp)
     /* that we just coalesced */
     if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp))) 
 	rover = bp;
+    if ((previousRoverSpots > (char *)bp) && (previousRoverSpots < NEXT_BLKP(bp))) 
+	previousRoverSpots = bp;
+    if ((previousRoverSpots2 > (char *)bp) && (previousRoverSpots2 < NEXT_BLKP(bp))) 
+	previousRoverSpots2 = bp;
+    if ((previousRoverSpots3 > (char *)bp) && (previousRoverSpots3 < NEXT_BLKP(bp))) 
+	previousRoverSpots3 = bp;
+    if ((previousRoverSpots4 > (char *)bp) && (previousRoverSpots4 < NEXT_BLKP(bp))) 
+	previousRoverSpots4 = bp;
+    if ((previousRoverSpots5 > (char *)bp) && (previousRoverSpots5 < NEXT_BLKP(bp))) 
+	previousRoverSpots5 = bp;
 #endif
 
     return bp;
