@@ -1,2 +1,5 @@
 malloclab-handout/*.o
+malloclab-handout/*.out
+malloclab-handout/*.txt
+malloclab-handout/diagnostics/*.txt
 malloclab-handout/mdriver

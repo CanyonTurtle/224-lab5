@@ -33,7 +33,7 @@
 /*
  * If NEXT_FIT defined use next fit search, else use first fit search 
  */
-#define NEXT_FITx
+#define NEXT_FIT 1
 
 /* Team structure */
 team_t team = {
@@ -50,7 +50,7 @@ team_t team = {
 /* Basic constants and macros */
 #define WSIZE       4       /* word size (bytes) */  
 #define DSIZE       8       /* doubleword size (bytes) */
-#define CHUNKSIZE  (1<<12)  /* initial heap size (bytes) */
+#define CHUNKSIZE  (1<<14)  /* initial heap size (bytes) */
 #define OVERHEAD    8       /* overhead of header and footer (bytes) */
 
 #define MAX(x, y) ((x) > (y)? (x) : (y))  
@@ -79,7 +79,24 @@ team_t team = {
 static char *heap_listp;  /* pointer to first block */  
 #ifdef NEXT_FIT
 static char *rover;       /* next fit rover */
+
+// list of places to possibly visit for the next block, based on the discontinuous places we have visited recently.
+static char *previousRoverSpots;
+static char *previousRoverSpots2;
+static char *previousRoverSpots3;
+static char *previousRoverSpots4;
+static char *previousRoverSpots5;
+
+static void updatePreviousRoverSpots(char* newRoverLocation) {
+    
+*previousRoverSpots5 = previousRoverSpots4;       /* next fit previousRoverSpots */
+*previousRoverSpots4 = previousRoverSpots3;       /* next fit previousRoverSpots */
+*previousRoverSpots3 = previousRoverSpots2;       /* next fit previousRoverSpots */
+*previousRoverSpots2 = previousRoverSpots;       /* next fit previousRoverSpots */
+*previousRoverSpots = newRoverLocation;       /* next fit previousRoverSpots */
+}
 #endif
+
 
 /* function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
@@ -146,6 +163,8 @@ void *mm_malloc(size_t size)
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)
 	return NULL;
     place(bp, asize);
+    // TODO now let's put the rover in the next spot.
+    // rover = NEXT_BLKP(bp);
     return bp;
 } 
 /* $end mmmalloc */
