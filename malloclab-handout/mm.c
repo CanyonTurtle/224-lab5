@@ -42,7 +42,7 @@ team_t team = {
 #else
     "implicit first fit", 
 #endif
-    "tutt07+ewilli24"
+    "tutt07+ewilli24",
     "Cannon Tuttle", "tutt07",
     "Ethan Williams", "ewilli24"
 }; 
