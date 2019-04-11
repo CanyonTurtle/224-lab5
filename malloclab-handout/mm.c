@@ -42,8 +42,9 @@ team_t team = {
 #else
     "implicit first fit", 
 #endif
-    "Dave OHallaron", "droh",
-    "", ""
+    "tutt07+ewilli24"
+    "Cannon Tuttle", "tutt07",
+    "Ethan Williams", "ewilli24"
 }; 
 
 /* $begin mallocmacros */
