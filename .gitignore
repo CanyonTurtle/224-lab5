@@ -1,2 +1,2 @@
-./malloclab-handout/*.o
-./malloclab-handout/mdriver
+malloclab-handout/*.o
+malloclab-handout/mdriver
