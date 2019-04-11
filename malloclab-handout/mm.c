@@ -88,12 +88,11 @@ static char *previousRoverSpots4;
 static char *previousRoverSpots5;
 
 static void updatePreviousRoverSpots(char* newRoverLocation) {
-    
-*previousRoverSpots5 = previousRoverSpots4;       /* next fit previousRoverSpots */
-*previousRoverSpots4 = previousRoverSpots3;       /* next fit previousRoverSpots */
-*previousRoverSpots3 = previousRoverSpots2;       /* next fit previousRoverSpots */
-*previousRoverSpots2 = previousRoverSpots;       /* next fit previousRoverSpots */
-*previousRoverSpots = newRoverLocation;       /* next fit previousRoverSpots */
+    *previousRoverSpots5 = previousRoverSpots4;       /* next fit previousRoverSpots */
+    *previousRoverSpots4 = previousRoverSpots3;       /* next fit previousRoverSpots */
+    *previousRoverSpots3 = previousRoverSpots2;       /* next fit previousRoverSpots */
+    *previousRoverSpots2 = previousRoverSpots;       /* next fit previousRoverSpots */
+    *previousRoverSpots = newRoverLocation;       /* next fit previousRoverSpots */
 }
 #endif
 
@@ -281,6 +280,8 @@ static void place(void *bp, size_t asize)
 }
 /* $end mmplace */
 
+#define IS_ELIGIBLE_SPOT(pointer, size) (!GET_ALLOC(HDRP(pointer)) && (size <= GET_SIZE(HDRP(pointer))))
+
 /* 
  * find_fit - Find a fit for a block with asize bytes 
  */
@@ -290,9 +291,11 @@ static void *find_fit(size_t asize)
     /* next fit search */
     char *oldrover = rover;
 
+    // first, search the old rover locations, and see if there is 
+    // a spot there where this spot could go.
     /* search from the rover to the end of list */
     for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-	if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+	if (IS_ELIGIBLE_SPOT(rover, asize))
 	    return rover;
 
     /* search from start of list to old rover */
