@@ -38,11 +38,10 @@
 /* Team structure */
 team_t team = {
 #ifdef NEXT_FIT
-    "implicit next fit", 
-#else
-    "implicit first fit", 
-#endif
     "tutt07+ewilli24",
+#else
+    "tutt07+ewilli24",
+#endif
     "Cannon Tuttle", "tutt07",
     "Ethan Williams", "ewilli24"
 }; 
