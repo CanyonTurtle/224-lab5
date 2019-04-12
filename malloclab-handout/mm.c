@@ -114,14 +114,15 @@ int mm_init(void)
     if ((heap_listp = mem_sbrk(4*WSIZE)) == NULL)
 	return -1;
     PUT(heap_listp, 0);                        /* alignment padding */
-    PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to end of list
-    PUT(heap_listp+DSIZE,heap_listp+WSIZE); // prev pointer from end of list to beginning of list
+    PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to first free block
     free_listp = heap_listp + WSIZE;
     //PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */ 
     //PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */ 
-    //PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
+    PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
 
     heap_listp += DSIZE;
+    PUT(heap_listp,heap_listp-WSIZE); // next pointer from first free block to end of list
+    PUT(heap_listp+WSIZE,heap_listp-DSIZE); // prev pointer from first free block to beginning of list
 
 #ifdef NEXT_FIT
     rover = heap_listp;
@@ -308,15 +309,24 @@ static void *find_fit(size_t asize)
 
     return NULL;  /* no fit found */
 #else 
-    /* first fit search */
     void *bp;
-
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-	if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+    for(bp = free_listp; GET_SIZE(HDRP(bp)) > 0; bp = GET_NEXT_FREE(bp))
+    {
+	if(asize <= GET_SIZE(HDRP(bp)))
+	{
 	    return bp;
 	}
     }
-    return NULL; /* no fit */
+    return NULL // no fit found
+    /* first fit search */
+    //void *bp;
+
+    //for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+//	if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+	//    return bp;
+	//}
+    //}
+    //return NULL; /* no fit */
 #endif
 }
 
@@ -330,6 +340,8 @@ static void *coalesce(void *bp)
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc) {            /* Case 1 */
+	PUT(bp, NEXT_FREE_LIST(free_listp));
+	PUT(bp + WSIZE, free_listp);
 	return bp;
     }
 
