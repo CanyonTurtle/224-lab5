@@ -114,15 +114,11 @@ int mm_init(void)
     if ((heap_listp = mem_sbrk(4*WSIZE)) == NULL)
 	return -1;
     PUT(heap_listp, 0);                        /* alignment padding */
-    PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to first free block
-    free_listp = heap_listp + WSIZE;
-    //PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */ 
-    //PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */ 
+    PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */ 
+    PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */ 
     PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
 
     heap_listp += DSIZE;
-    PUT(heap_listp,heap_listp-WSIZE); // next pointer from first free block to end of list
-    PUT(heap_listp+WSIZE,heap_listp-DSIZE); // prev pointer from first free block to beginning of list
 
 #ifdef NEXT_FIT
     rover = heap_listp;
@@ -131,6 +127,11 @@ int mm_init(void)
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
 	return -1;
+    
+    PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to first free block
+    free_listp = heap_listp + WSIZE;
+    PUT(heap_listp,heap_listp-WSIZE); // next pointer from first free block to end of list
+    PUT(heap_listp+WSIZE,heap_listp-DSIZE); // prev pointer from first free block to beginning of list
     return 0;
 }
 /* $end mminit */
