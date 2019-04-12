@@ -77,11 +77,15 @@ team_t team = {
 #define NEXT_FREE(bp)  (*bp)
 #define PREV_FREE(bp)  (*(bp + WSIZE))
 
-#define PUT_NEXT_FREE_NEXT(bp, val) (PUT(bp, val))
-#define PUT_NEXT_FREE_PREV(bp, val) (PUT((bp + WSIZE), val))
+#define NEXT_FREELISTP(bp) *bp
+#define PREV_FREELISTP(bp) *(bp + WSIZE)
 
-#define PUT_PREV_FREE_NEXT(bp, val) (PUT(bp, val))
-#define PUT_PREV_FREE_PREV(bp, val) (PUT((bp + WSIZE), val))
+#define SET_PREV_FREES_PREV(bp, prevp) (PUT(PREV_FREELISTP(bp), prevp)
+#define SET_PREV_FREES_NEXT(bp, nextp) (PUT(PREV_FREELISTP(bp) + WSIZE, nextp))
+
+#define SET_NEXT_FREES_PREV(bp, prevp) (PUT(NEXT_FREELISTP(bp), prevp)
+#define SET_NEXT_FREES_NEXT(bp, nextp) (PUT(NEXT_FREELISTP(bp) + WSIZE, nextp))
+
 /* $end mallocmacros */
 
 /* Global variables */
