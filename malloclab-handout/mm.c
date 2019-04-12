@@ -73,28 +73,21 @@ team_t team = {
 /* Given block ptr bp, compute address of next and previous blocks */
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
+
+#define NEXT_FREE(bp)  (*bp)
+#define PREV_FREE(bp)  (*(bp + WSIZE))
+
+#define PUT_NEXT_FREE_NEXT(bp, val) (PUT(bp, val))
+#define PUT_NEXT_FREE_PREV(bp, val) (PUT((bp + WSIZE), val))
+
+#define PUT_PREV_FREE_NEXT(bp, val) (PUT(bp, val))
+#define PUT_PREV_FREE_PREV(bp, val) (PUT((bp + WSIZE), val))
 /* $end mallocmacros */
 
 /* Global variables */
 static char *heap_listp;  /* pointer to first block */  
 #ifdef NEXT_FIT
 static char *rover;       /* next fit rover */
-
-// list of places to possibly visit for the next block, based on the discontinuous places we have visited recently.
-static char *previousRoverSpots;
-static char *previousRoverSpots2;
-static char *previousRoverSpots3;
-static char *previousRoverSpots4;
-static char *previousRoverSpots5;
-
-static void updatePreviousRoverSpots(char* newRoverLocation) {
-    
-*previousRoverSpots5 = previousRoverSpots4;       /* next fit previousRoverSpots */
-*previousRoverSpots4 = previousRoverSpots3;       /* next fit previousRoverSpots */
-*previousRoverSpots3 = previousRoverSpots2;       /* next fit previousRoverSpots */
-*previousRoverSpots2 = previousRoverSpots;       /* next fit previousRoverSpots */
-*previousRoverSpots = newRoverLocation;       /* next fit previousRoverSpots */
-}
 #endif
 
 
@@ -268,6 +261,10 @@ static void place(void *bp, size_t asize)
     size_t csize = GET_SIZE(HDRP(bp));   
 
     if ((csize - asize) >= (DSIZE + OVERHEAD)) { 
+	PUT(bp + asize, NEXT_FREE_LIST(bp));
+	PUT(bp + asize + WSIZE, PREV_FREE_LIST(bp));
+	PUT_NEXT_FREE(bp, bp + asize);
+	PUT_PREV_FREE(bp, bp + asize);
 	PUT(HDRP(bp), PACK(asize, 1));
 	PUT(FTRP(bp), PACK(asize, 1));
 	bp = NEXT_BLKP(bp);
