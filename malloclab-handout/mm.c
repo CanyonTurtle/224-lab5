@@ -80,15 +80,16 @@ team_t team = {
 #define NEXT_FREELISTP(bp) *bp
 #define PREV_FREELISTP(bp) *(bp + WSIZE)
 
-#define SET_PREV_FREES_PREV(bp, prevp) (PUT(PREV_FREELISTP(bp), prevp)
-#define SET_PREV_FREES_NEXT(bp, nextp) (PUT(PREV_FREELISTP(bp) + WSIZE, nextp))
+#define SET_PREV_FREES_PREV(bp, prevp) (PUT(PREV_FREELISTP(bp) + WSIZE, prevp)
+#define SET_PREV_FREES_NEXT(bp, nextp) (PUT(PREV_FREELISTP(bp), nextp))
 
-#define SET_NEXT_FREES_PREV(bp, prevp) (PUT(NEXT_FREELISTP(bp), prevp)
-#define SET_NEXT_FREES_NEXT(bp, nextp) (PUT(NEXT_FREELISTP(bp) + WSIZE, nextp))
+#define SET_NEXT_FREES_PREV(bp, prevp) (PUT(NEXT_FREELISTP(bp) + WSIZE, prevp)
+#define SET_NEXT_FREES_NEXT(bp, nextp) (PUT(NEXT_FREELISTP(bp), nextp))
 
 /* $end mallocmacros */
 
 /* Global variables */
+static char *free_listp;
 static char *heap_listp;  /* pointer to first block */  
 #ifdef NEXT_FIT
 static char *rover;       /* next fit rover */
@@ -113,9 +114,13 @@ int mm_init(void)
     if ((heap_listp = mem_sbrk(4*WSIZE)) == NULL)
 	return -1;
     PUT(heap_listp, 0);                        /* alignment padding */
-    PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */ 
-    PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */ 
-    PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
+    PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to end of list
+    PUT(heap_listp+DSIZE,heap_listp+WSIZE); // prev pointer from end of list to beginning of list
+    free_listp = heap_listp + WSIZE;
+    //PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */ 
+    //PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */ 
+    //PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
+
     heap_listp += DSIZE;
 
 #ifdef NEXT_FIT
@@ -267,8 +272,8 @@ static void place(void *bp, size_t asize)
     if ((csize - asize) >= (DSIZE + OVERHEAD)) { 
 	PUT(bp + asize, NEXT_FREE_LIST(bp));
 	PUT(bp + asize + WSIZE, PREV_FREE_LIST(bp));
-	PUT_NEXT_FREE(bp, bp + asize);
-	PUT_PREV_FREE(bp, bp + asize);
+	SET_PREV_FREES_NEXT(bp, bp + asize);
+	SET_NEXT_FREES_PREV(bp, bp + asize);
 	PUT(HDRP(bp), PACK(asize, 1));
 	PUT(FTRP(bp), PACK(asize, 1));
 	bp = NEXT_BLKP(bp);
