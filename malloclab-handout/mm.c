@@ -33,7 +33,7 @@
 /*
  * If NEXT_FIT defined use next fit search, else use first fit search 
  */
-#define NEXT_FIT 1
+// #define NEXT_FIT 1
 
 /* Team structure */
 team_t team = {
@@ -74,11 +74,8 @@ team_t team = {
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-#define NEXT_FREE(bp)  (*bp)
-#define PREV_FREE(bp)  (*(bp + WSIZE))
-
-#define NEXT_FREELISTP(bp) *bp
-#define PREV_FREELISTP(bp) *(bp + WSIZE)
+#define GET_NEXT_FREE(bp)  (*bp)
+#define GET_PREV_FREE(bp)  (*(bp + WSIZE))
 
 #define SET_PREV_FREES_PREV(bp, prevp) (PUT(PREV_FREELISTP(bp) + WSIZE, prevp)
 #define SET_PREV_FREES_NEXT(bp, nextp) (PUT(PREV_FREELISTP(bp), nextp))
@@ -89,7 +86,7 @@ team_t team = {
 /* $end mallocmacros */
 
 /* Global variables */
-static char *free_listp;
+static char *free_list_root_p;
 static char *heap_listp;  /* pointer to first block */  
 #ifdef NEXT_FIT
 static char *rover;       /* next fit rover */
@@ -127,11 +124,20 @@ int mm_init(void)
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
 	return -1;
+
+    // UNUSED
     
-    PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to first free block
-    free_listp = heap_listp + WSIZE;
-    PUT(heap_listp,heap_listp-WSIZE); // next pointer from first free block to end of list
-    PUT(heap_listp+WSIZE,heap_listp-DSIZE); // prev pointer from first free block to beginning of list
+    // PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to first free block
+    // PUT(heap_listp,heap_listp-WSIZE); // next pointer from first free block to end of list
+    // PUT(heap_listp+WSIZE,heap_listp-DSIZE); // prev pointer from first free block to beginning of list
+    
+    // The free list will refer to the first free memory block.
+    free_list_root_p = heap_listp;
+
+    // set up the first free memory block with null refs to next and prev.
+    PUT(free_list_root_p, 0);
+    PUT(free_list_root_p + WSIZE, 0);
+
     return 0;
 }
 /* $end mminit */
@@ -272,10 +278,15 @@ static void place(void *bp, size_t asize)
     size_t csize = GET_SIZE(HDRP(bp));   
 
     if ((csize - asize) >= (DSIZE + OVERHEAD)) { 
-	PUT(bp + asize, NEXT_FREE_LIST(bp));
-	PUT(bp + asize + WSIZE, PREV_FREE_LIST(bp));
+
+	// new part for linking the explicit free list
+	// moving the links to the adjusted position of the free block
+	PUT(bp + asize, GET_NEXT_FREE(bp));
+	PUT(bp + asize + WSIZE, GET_PREV_FREE(bp));
 	SET_PREV_FREES_NEXT(bp, bp + asize);
 	SET_NEXT_FREES_PREV(bp, bp + asize);
+	
+	// old, already existed
 	PUT(HDRP(bp), PACK(asize, 1));
 	PUT(FTRP(bp), PACK(asize, 1));
 	bp = NEXT_BLKP(bp);
@@ -283,6 +294,11 @@ static void place(void *bp, size_t asize)
 	PUT(FTRP(bp), PACK(csize-asize, 0));
     }
     else { 
+	// new, link the things on the left and right.
+	SET_NEXT_FREES_PREV(bp, GET_PREV_FREE(bp));
+	SET_PREV_FREES_NEXT(bp, GET_NEXT_FREE(bp));
+
+	// old
 	PUT(HDRP(bp), PACK(csize, 1));
 	PUT(FTRP(bp), PACK(csize, 1));
     }
@@ -310,8 +326,13 @@ static void *find_fit(size_t asize)
 
     return NULL;  /* no fit found */
 #else 
+
+    // EXPLICIT FREE LIST SEARCH
+    
     void *bp;
-    for(bp = free_listp; GET_SIZE(HDRP(bp)) > 0; bp = GET_NEXT_FREE(bp))
+
+    // iterate across the free  list, find a spot  that is big enough, and use this.
+    for(bp = free_list_root_p; GET_NEXT_FREE(bp) != 0; bp = GET_NEXT_FREE(bp))
     {
 	if(asize <= GET_SIZE(HDRP(bp)))
 	{
@@ -319,6 +340,9 @@ static void *find_fit(size_t asize)
 	}
     }
     return NULL // no fit found
+
+    // UNUSED
+    
     /* first fit search */
     //void *bp;
 
@@ -341,8 +365,16 @@ static void *coalesce(void *bp)
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc) {            /* Case 1 */
-	PUT(bp, NEXT_FREE_LIST(free_listp));
-	PUT(bp + WSIZE, free_listp);
+	// set the next of this block to the current, old, next.
+	PUT(bp, GET_NEXT_FREE_LIST(free_list_root_p));
+	// set prev to zero.
+	PUT(bp + WSIZE, 0);
+	// set the next's previous to this, if there is a next.
+	if(GET_NEXT_FREE(bp) != 0) {
+	    SET_NEXT_FREES_PREV(bp, bp);
+	}
+	// set the root pointer 
+	PUT(free_list_root_p, 0);
 	return bp;
     }
 
