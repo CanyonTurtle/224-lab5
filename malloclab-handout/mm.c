@@ -74,14 +74,14 @@ team_t team = {
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-#define GET_NEXT_FREE(bp)  (*bp)
-#define GET_PREV_FREE(bp)  (*(bp + WSIZE))
+#define GET_NEXT_FREE(bp) (char*)GET(bp)
+#define GET_PREV_FREE(bp) (char*)GET((char *)bp + WSIZE)
 
-#define SET_PREV_FREES_PREV(bp, prevp) (PUT(PREV_FREELISTP(bp) + WSIZE, prevp)
-#define SET_PREV_FREES_NEXT(bp, nextp) (PUT(PREV_FREELISTP(bp), nextp))
+#define SET_PREV_FREES_PREV(bp, prevp) PUT((char *)GET_PREV_FREE(bp) + WSIZE, prevp)
+#define SET_PREV_FREES_NEXT(bp, nextp) PUT((char *)GET_PREV_FREE(bp), nextp)
 
-#define SET_NEXT_FREES_PREV(bp, prevp) (PUT(NEXT_FREELISTP(bp) + WSIZE, prevp)
-#define SET_NEXT_FREES_NEXT(bp, nextp) (PUT(NEXT_FREELISTP(bp), nextp))
+#define SET_NEXT_FREES_PREV(bp, prevp) PUT((char *)GET_NEXT_FREE(bp) + WSIZE, prevp)
+#define SET_NEXT_FREES_NEXT(bp, nextp) PUT((char *)GET_NEXT_FREE(bp), nextp)
 
 /* $end mallocmacros */
 
@@ -101,6 +101,8 @@ static void *coalesce(void *bp);
 static void printblock(void *bp); 
 static void checkblock(void *bp);
 
+// more helpers that we made 
+static void dissociateBlockFromList(void* bp);
 /* 
  * mm_init - Initialize the memory manager 
  */
@@ -281,11 +283,11 @@ static void place(void *bp, size_t asize)
 
 	// new part for linking the explicit free list
 	// moving the links to the adjusted position of the free block
-	PUT(bp + asize, GET_NEXT_FREE(bp));
-	PUT(bp + asize + WSIZE, GET_PREV_FREE(bp));
-	SET_PREV_FREES_NEXT(bp, bp + asize);
-	SET_NEXT_FREES_PREV(bp, bp + asize);
-	
+	PUT((char *)(bp + asize), GET_NEXT_FREE(bp));
+	PUT((char *)bp + asize + WSIZE, GET_PREV_FREE(bp));
+	SET_PREV_FREES_NEXT(bp, (char *)bp + asize);
+	SET_NEXT_FREES_PREV(bp, (char *)bp + asize);
+
 	// old, already existed
 	PUT(HDRP(bp), PACK(asize, 1));
 	PUT(FTRP(bp), PACK(asize, 1));
@@ -295,8 +297,7 @@ static void place(void *bp, size_t asize)
     }
     else { 
 	// new, link the things on the left and right.
-	SET_NEXT_FREES_PREV(bp, GET_PREV_FREE(bp));
-	SET_PREV_FREES_NEXT(bp, GET_NEXT_FREE(bp));
+	dissociateBlockFromList(bp);
 
 	// old
 	PUT(HDRP(bp), PACK(csize, 1));
@@ -339,7 +340,7 @@ static void *find_fit(size_t asize)
 	    return bp;
 	}
     }
-    return NULL // no fit found
+    return NULL; // no fit found
 
     // UNUSED
     
@@ -358,15 +359,10 @@ static void *find_fit(size_t asize)
 /*
  * coalesce - boundary tag coalescing. Return ptr to coalesced block
  */
-static void *coalesce(void *bp) 
-{
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
-    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    size_t size = GET_SIZE(HDRP(bp));
 
-    if (prev_alloc && next_alloc) {            /* Case 1 */
+static void insertFreeBlockAtBeginning(void* bp) {
 	// set the next of this block to the current, old, next.
-	PUT(bp, GET_NEXT_FREE_LIST(free_list_root_p));
+	PUT(bp, GET_NEXT_FREE(free_list_root_p));
 	// set prev to zero.
 	PUT(bp + WSIZE, 0);
 	// set the next's previous to this, if there is a next.
@@ -375,28 +371,73 @@ static void *coalesce(void *bp)
 	}
 	// set the root pointer 
 	PUT(free_list_root_p, 0);
+}
+
+static void dissociateBlockFromList(void* bp) {
+    SET_NEXT_FREES_PREV(bp, GET_PREV_FREE(bp));
+    SET_PREV_FREES_NEXT(bp, GET_NEXT_FREE(bp));
+}
+
+static void *coalesce(void *bp) 
+{
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t size = GET_SIZE(HDRP(bp));
+
+    if (prev_alloc && next_alloc) {            /* Case 1 */
+	// new
+	insertFreeBlockAtBeginning(bp);
+	// old
 	return bp;
     }
 
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
+
+	// new, for the right block pointer, link its prev and next 
+	// in order to dissociate it.
+	dissociateBlockFromList(NEXT_BLKP(bp));
+
+	// everything after the dissociation above is exactly the same as case one.
+	insertFreeBlockAtBeginning(bp);
+	
+	// old
 	size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
 	PUT(HDRP(bp), PACK(size, 0));
 	PUT(FTRP(bp), PACK(size,0));
     }
 
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
+	// new, for the right block pointer, link its prev and next 
+	// in order to dissociate it.
+	dissociateBlockFromList(PREV_BLKP(bp));
+
+	// old
 	size += GET_SIZE(HDRP(PREV_BLKP(bp)));
 	PUT(FTRP(bp), PACK(size, 0));
 	PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
 	bp = PREV_BLKP(bp);
+
+	// NOTE: this comes after because it needs to operate on the prev location.
+	// everything after the dissociation above is exactly the same as case one.
+	insertFreeBlockAtBeginning(bp);
     }
 
     else {                                     /* Case 4 */
+	// new, for the right block pointer, link its prev and next 
+	// in order to dissociate it.
+	dissociateBlockFromList(PREV_BLKP(bp));
+	dissociateBlockFromList(NEXT_BLKP(bp));
+
+	// old
 	size += GET_SIZE(HDRP(PREV_BLKP(bp))) + 
 	    GET_SIZE(FTRP(NEXT_BLKP(bp)));
 	PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
 	PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
 	bp = PREV_BLKP(bp);
+
+	// NOTE: this comes after because it needs to operate on the prev location.
+	// everything after the dissociation above is exactly the same as case one.
+	insertFreeBlockAtBeginning(bp);
     }
 
 #ifdef NEXT_FIT
