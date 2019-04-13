@@ -5,7 +5,8 @@ VERSION = 1
 HANDINDIR = /users/groups/cs224ta/malloclab
 
 CC = gcc
-CFLAGS = -Wall -O2 -m32 -pg
+# CFLAGS = -Wall -O2 -m32 -g
+CFLAGS = -Wall -m32 -g
 
 OBJS = mdriver.o mm.o memlib.o fsecs.o fcyc.o clock.o ftimer.o
 

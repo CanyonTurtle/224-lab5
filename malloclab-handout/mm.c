@@ -74,14 +74,14 @@ team_t team = {
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-#define GET_NEXT_FREE(bp) (char*)GET(bp)
-#define GET_PREV_FREE(bp) (char*)GET((char *)bp + WSIZE)
+#define GET_NEXT_FREE(bp) GET(bp)
+#define GET_PREV_FREE(bp) GET(bp + WSIZE)
 
-#define SET_PREV_FREES_PREV(bp, prevp) PUT((char *)GET_PREV_FREE(bp) + WSIZE, prevp)
-#define SET_PREV_FREES_NEXT(bp, nextp) PUT((char *)GET_PREV_FREE(bp), nextp)
+#define SET_PREV_FREES_PREV(bp, prevp) PUT(GET_PREV_FREE(bp) + WSIZE, prevp)
+#define SET_PREV_FREES_NEXT(bp, nextp) PUT(GET_PREV_FREE(bp), nextp)
 
-#define SET_NEXT_FREES_PREV(bp, prevp) PUT((char *)GET_NEXT_FREE(bp) + WSIZE, prevp)
-#define SET_NEXT_FREES_NEXT(bp, nextp) PUT((char *)GET_NEXT_FREE(bp), nextp)
+#define SET_NEXT_FREES_PREV(bp, prevp) PUT(GET_NEXT_FREE(bp) + WSIZE, prevp)
+#define SET_NEXT_FREES_NEXT(bp, nextp) PUT(GET_NEXT_FREE(bp), nextp)
 
 /* $end mallocmacros */
 
@@ -103,12 +103,18 @@ static void checkblock(void *bp);
 
 // more helpers that we made 
 static void dissociateBlockFromList(void* bp);
+
+char hasFinishedInit;
+
 /* 
  * mm_init - Initialize the memory manager 
  */
 /* $begin mminit */
 int mm_init(void) 
 {
+    // TODO this global jank 
+    hasFinishedInit = 0;
+
     /* create the initial empty heap */
     if ((heap_listp = mem_sbrk(4*WSIZE)) == NULL)
 	return -1;
@@ -118,6 +124,8 @@ int mm_init(void)
     PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
 
     heap_listp += DSIZE;
+    // The free list will refer to the first free memory block.
+    free_list_root_p = heap_listp + DSIZE;
 
 #ifdef NEXT_FIT
     rover = heap_listp;
@@ -132,14 +140,10 @@ int mm_init(void)
     // PUT(heap_listp+WSIZE,heap_listp+DSIZE); // next pointer to first free block
     // PUT(heap_listp,heap_listp-WSIZE); // next pointer from first free block to end of list
     // PUT(heap_listp+WSIZE,heap_listp-DSIZE); // prev pointer from first free block to beginning of list
-    
-    // The free list will refer to the first free memory block.
-    free_list_root_p = heap_listp;
-
     // set up the first free memory block with null refs to next and prev.
-    PUT(free_list_root_p, 0);
-    PUT(free_list_root_p + WSIZE, 0);
 
+    // TODO this global jank 
+    hasFinishedInit = 1;
     return 0;
 }
 /* $end mminit */
@@ -285,8 +289,25 @@ static void place(void *bp, size_t asize)
 	// moving the links to the adjusted position of the free block
 	PUT((char *)(bp + asize), GET_NEXT_FREE(bp));
 	PUT((char *)bp + asize + WSIZE, GET_PREV_FREE(bp));
-	SET_PREV_FREES_NEXT(bp, (char *)bp + asize);
-	SET_NEXT_FREES_PREV(bp, (char *)bp + asize);
+	
+	void* bpOldNextFree = GET_NEXT_FREE(bp);
+
+	if(GET_PREV_FREE(bp) == 0)
+	{
+	    // PUT(free_list_root_p, (char *)bp + asize);
+	    free_list_root_p = (char *)bp + asize;
+	}
+	else
+	{
+	    SET_PREV_FREES_NEXT(bp, (char *)bp + asize);
+	}
+	if(bpOldNextFree != 0)
+	{
+	    SET_NEXT_FREES_PREV(bp, (char *)bp + asize);
+	}
+	// 
+	// SET_PREV_FREES_NEXT(bp, (char *)bp + asize);
+	// SET_NEXT_FREES_PREV(bp, (char *)bp + asize);
 
 	// old, already existed
 	PUT(HDRP(bp), PACK(asize, 1));
@@ -340,6 +361,11 @@ static void *find_fit(size_t asize)
 	    return bp;
 	}
     }
+    // needs to run one more time
+    if(asize <= GET_SIZE(HDRP(bp)))
+    {
+	return bp;
+    }
     return NULL; // no fit found
 
     // UNUSED
@@ -370,12 +396,30 @@ static void insertFreeBlockAtBeginning(void* bp) {
 	    SET_NEXT_FREES_PREV(bp, bp);
 	}
 	// set the root pointer 
-	PUT(free_list_root_p, 0);
+	free_list_root_p = bp;
 }
 
 static void dissociateBlockFromList(void* bp) {
-    SET_NEXT_FREES_PREV(bp, GET_PREV_FREE(bp));
-    SET_PREV_FREES_NEXT(bp, GET_NEXT_FREE(bp));
+    char* prevThing = GET_PREV_FREE(bp);
+    char* nextThing = GET_NEXT_FREE(bp);
+    // case 1 - only right exists
+    if(!prevThing && nextThing) {
+	// set the next to refer to boundary, aka 0
+	SET_NEXT_FREES_PREV(bp, 0);
+	// update the root.
+    }
+    // case 2 - only left exists
+    else if(prevThing && !nextThing) {
+	// set the prev to refer to boundary, aka 0
+	SET_PREV_FREES_NEXT(bp, 0);
+	// update the root to be zero.
+    }
+    // case 3 - both exist
+    else if(prevThing && nextThing) {
+	SET_NEXT_FREES_PREV(bp, prevThing);
+	SET_PREV_FREES_NEXT(bp, nextThing);
+    }
+    // else do nothing
 }
 
 static void *coalesce(void *bp) 
@@ -384,7 +428,14 @@ static void *coalesce(void *bp)
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
-    if (prev_alloc && next_alloc) {            /* Case 1 */
+    if(!hasFinishedInit) {
+
+	// set up the first free memory block with null refs to next and prev.
+	// PUT(GET(free_list_root_p), 0);
+	// PUT(GET(free_list_root_p + WSIZE), 0);
+	return bp;
+    }
+    else if (prev_alloc && next_alloc) {            /* Case 1 */
 	// new
 	insertFreeBlockAtBeginning(bp);
 	// old
