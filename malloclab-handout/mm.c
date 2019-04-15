@@ -37,11 +37,7 @@
 
 /* Team structure */
 team_t team = {
-#ifdef NEXT_FIT
     "tutt07+ewilli24",
-#else
-    "tutt07+ewilli24",
-#endif
     "Cannon Tuttle", "tutt07",
     "Ethan Williams", "ewilli24"
 }; 
@@ -87,16 +83,15 @@ team_t team = {
 #define SET_NEXT_FREES_PREV(bp, prevp) SET_PREV_FREE(GET_NEXT_FREE(bp), (size_t)prevp)
 #define SET_NEXT_FREES_NEXT(bp, nextp) SET_NEXT_FREE(GET_NEXT_FREE(bp), (size_t)nextp)
 
+#define CREATE_2WAY_LINK(thisbp, nextbp) SET_NEXT_FREE(thisbp, nextbp); SET_PREV_FREE(nextbp, thisbp);
+
 /* $end mallocmacros */
 
 /* Global variables */
 static char *free_list_root_p;
 static char *heap_listp;  /* pointer to first block */  
-#ifdef NEXT_FIT
-static char *rover;       /* next fit rover */
-#endif
 
-int DEBUG_MODE = 1;
+int DEBUG_MODE = 0;
 #define condprintf(str, ...) { \
   if(DEBUG_MODE) { \
     printf(str, ##__VA_ARGS__); \
@@ -125,7 +120,7 @@ char hasFinishedInit;
 int mm_init(void) {
     // TODO this global jank 
     hasFinishedInit = 0;
-    condprintf("<MM_INIT>\n");
+    // condprintf("<MM_INIT>\n");
 
     /* create the initial empty heap */
     if ((heap_listp = mem_sbrk(4*WSIZE)) == NULL)
@@ -139,9 +134,6 @@ int mm_init(void) {
     // The free list will refer to the first free memory block.
     free_list_root_p = heap_listp + DSIZE;
 
-#ifdef NEXT_FIT
-    rover = heap_listp;
-#endif
 
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
@@ -166,7 +158,7 @@ int mm_init(void) {
 /* $begin mmmalloc */
 void *mm_malloc(size_t size) 
 {
-    condprintf("<MALLOC>\n");
+    // condprintf("<MALLOC>\n");
     size_t asize;      /* adjusted block size */
     size_t extendsize; /* amount to extend heap if no fit */
     char *bp;      
@@ -184,20 +176,18 @@ void *mm_malloc(size_t size)
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {
 	place(bp, asize);
-
 	//TODO prints
-	condprintf("at the end of malloc...\n");
-	// printFreelist();
+	// condprintf("at the end of malloc where we found a fit...\n");
+	//printFreelist();
 	return bp;
     }
 
     /* No fit found. Get more memory and place the block */
     extendsize = MAX(asize,CHUNKSIZE);
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL) {
-
 	//TODO prints
-	condprintf("at the end of malloc...\n");
-	// printFreelist();
+	// condprintf("at the end of malloc after failing extending heap...\n");
+	//printFreelist();
 	return NULL;
     }
     place(bp, asize);
@@ -205,8 +195,8 @@ void *mm_malloc(size_t size)
     // rover = NEXT_BLKP(bp);
     //
     // TODO printing the freelist here.
-    condprintf("at the end of malloc...\n");
-    // printFreelist();
+    // condprintf("at the end of malloc after succeeding extending heap...\n");
+    //printFreelist();
     return bp;
 } 
 /* $end mmmalloc */
@@ -217,8 +207,8 @@ void *mm_malloc(size_t size)
 /* $begin mmfree */
 void mm_free(void *bp)
 {
-    condprintf("<FREE>\n");
-    // condprintf("freeing...\n");
+    // condprintf("<FREE>\n");
+    // // condprintf("freeing...\n");
     size_t size = GET_SIZE(HDRP(bp));
 
     PUT(HDRP(bp), PACK(size, 0));
@@ -233,11 +223,12 @@ void mm_free(void *bp)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
+    // condprintf("<REALLOC>\n");
     void *newp;
     size_t copySize;
 
     if ((newp = mm_malloc(size)) == NULL) {
-	condprintf("ERROR: mm_malloc failed in mm_realloc\n");
+	printf("ERROR: mm_malloc failed in mm_realloc\n");
 	exit(1);
     }
     copySize = GET_SIZE(HDRP(ptr));
@@ -256,10 +247,10 @@ void mm_checkheap(int verbose)
     char *bp = heap_listp;
 
     if (verbose)
-	condprintf("Heap (%p):\n", heap_listp);
+	printf("Heap (%p):\n", heap_listp);
 
     if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)))
-	condprintf("Bad prologue header\n");
+	printf("Bad prologue header\n");
     checkblock(heap_listp);
 
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
@@ -271,7 +262,7 @@ void mm_checkheap(int verbose)
     if (verbose)
 	printblock(bp);
     if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
-	condprintf("Bad epilogue header\n");
+	printf("Bad epilogue header\n");
 }
 
 /* The remaining routines are internal helper routines */
@@ -282,7 +273,7 @@ void mm_checkheap(int verbose)
 /* $begin mmextendheap */
 static void *extend_heap(size_t words) 
 {
-    // printf("extending the heapo\n");
+    // condprintf("<EXTEND_HEAP\n");
     char *bp;
     size_t size;
 	
@@ -310,39 +301,44 @@ static void *extend_heap(size_t words)
 static void place(void *bp, size_t asize)
 /* $end mmplace-proto */
 {
-    // condprintf("placing...\n");
+    // condprintf("<PLACE>\n");
     size_t csize = GET_SIZE(HDRP(bp));   
 
+    // TODO we changed this conditional to gurantee that places will have space for next and prev.
     if ((csize - asize) >= (DSIZE + OVERHEAD)) { 
 
-	// new part for linking the explicit free list
-	// moving the links to the adjusted position of the free block
+	// condprintf("place case 1: splitting the block.\n");
+
+	
+	char* prevThing = (char*)GET_PREV_FREE(bp);
+	char* nextThing = (char*)GET_NEXT_FREE(bp);
+
 	char* adjustedBp = (char*)(bp + asize);
-	SET_NEXT_FREE((char *)adjustedBp, GET_NEXT_FREE(bp));
-	SET_PREV_FREE((char *)adjustedBp, GET_PREV_FREE(bp));
 
-	size_t* bpOldNextFree;
-	bpOldNextFree = (size_t*)GET_NEXT_FREE(bp);
+	// case 1
+	// (root)Y - Z? -> shifted (root)Y - Z?
+	// case 2
+	// X - Y - Z? -> X - shifted Y - Z?
+	
+	// case 1 specific
+	if(!prevThing) {
+	    free_list_root_p = adjustedBp;
+	}
 
-	if(GET_PREV_FREE(bp) == 0)
-	{
-	    // PUT(free_list_root_p, (char *)bp + asize);
-	    free_list_root_p = (char *)(bp + asize);
+	// case 2 specific
+	if(prevThing) {
+	    SET_NEXT_FREE(prevThing, adjustedBp);
 	}
-	else
-	{
-	    SET_PREV_FREES_NEXT(bp, (char *)(bp + asize));
+
+	// both case 1 and 2 handling if there's a next (Z)
+	SET_NEXT_FREE(adjustedBp, nextThing);
+	SET_PREV_FREE(adjustedBp, prevThing);
+
+	if(nextThing) {
+	    SET_PREV_FREE(nextThing, adjustedBp);
 	}
-	if(bpOldNextFree != 0)
-	{
-	    SET_NEXT_FREES_PREV(bp, (char *)(bp + asize));
-	}
-	// 
-	// SET_PREV_FREES_NEXT(bp, (char *)bp + asize);
-	// SET_NEXT_FREES_PREV(bp, (char *)bp + asize);
 
 	// old, already existed
-	// condprintf("placing case 1, with csize as %d, asize as %d\n", csize, asize);
 	PUT(HDRP(bp), PACK(asize, 1));
 	PUT(FTRP(bp), PACK(asize, 1));
 	bp = NEXT_BLKP(bp);
@@ -350,11 +346,15 @@ static void place(void *bp, size_t asize)
 	PUT(FTRP(bp), PACK(csize-asize, 0));
     }
     else { 
+	// condprintf("place case 2: using the entire block.\n");
+
+	//printFreelist();
 	// new, link the things on the left and right.
 	dissociateBlockFromList(bp);
 
+	// condprintf("root p:%p\n", free_list_root_p);
+	//printFreelist();
 	// old
-	// condprintf("placing case 2, with csize as %d\n", csize);
 	PUT(HDRP(bp), PACK(csize, 1));
 	PUT(FTRP(bp), PACK(csize, 1));
     }
@@ -366,24 +366,9 @@ static void place(void *bp, size_t asize)
  */
 static void *find_fit(size_t asize)
 {
-#ifdef NEXT_FIT 
-    /* next fit search */
-    char *oldrover = rover;
-
-    /* search from the rover to the end of list */
-    for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-	if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-	    return rover;
-
-    /* search from start of list to old rover */
-    for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
-	if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
-	    return rover;
-
-    return NULL;  /* no fit found */
-#else 
 
     // EXPLICIT FREE LIST SEARCH
+    // condprintf("<FIND_FIT>\n");
     
     char *bp;
 
@@ -391,184 +376,124 @@ static void *find_fit(size_t asize)
     // for(bp = free_list_root_p; GET_NEXT_FREE(bp) != 0; bp = GET_NEXT_FREE(bp))
     for(bp = free_list_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp))
     {
-	// condprintf("spinning");
+	// condprintf("\t iterating in find_fit... bp = %p\n", bp);
+	// // condprintf("spinning");
 	if(asize <= GET_SIZE(HDRP(bp)))
 	{
+	    // condprintf("\tfound the fit!\n");
 	    return bp;
 	}
     }
-    // needs to run one more time
-//     if(asize <= GET_SIZE(HDRP(bp)))
-//     {
-// 	return bp;
-//     }
     return NULL; // no fit found
+}
 
-    // UNUSED
-    
-    /* first fit search */
-    //void *bp;
+static void insertFreeBlockAtBeginning(void* bp) {
+    // case 1
+    // (root)null -> (root)X, X.prev = 0, X.next = 0
+    if(!free_list_root_p) {
+      free_list_root_p = bp;
+      SET_PREV_FREE(bp, 0);
+      SET_NEXT_FREE(bp, 0);
+    }
 
-    //for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-//	if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-	//    return bp;
-	//}
-    //}
-    //return NULL; /* no fit */
-#endif
+    // case 2
+    // (root)Y -> (root)X, X <=> Y, X.prev = 0, 
+    else {
+      SET_PREV_FREE(bp, 0);
+      CREATE_2WAY_LINK(bp, free_list_root_p);
+      free_list_root_p = bp;
+    }
+}
+
+static void dissociateBlockFromList(void* bp) {
+
+    // // condprintf("dissociating a block...\n");
+
+    char* prevThing = (char*)GET_PREV_FREE(bp);
+    char* nextThing = (char*)GET_NEXT_FREE(bp);
+
+    // Case 1
+    //  (root)Y - Z -> (root)Z
+    if(!prevThing && nextThing) {
+	SET_PREV_FREE(nextThing, 0);
+	free_list_root_p = nextThing;
+    }
+
+    // case 2
+    // X - Y - O -> X
+    else if(prevThing && !nextThing) {
+	SET_NEXT_FREE(prevThing, 0);
+    }
+
+    // case 3
+    // X - Y - Z -> X ---- Z
+    else if(prevThing && nextThing) {
+	CREATE_2WAY_LINK(prevThing, nextThing);
+    }
+
+    // case 4
+    // (root)Y -> (root is null)
+    else {
+	// // condprintf("hitting the zero case\n");
+	free_list_root_p = 0;
+    }
 }
 
 /*
  * coalesce - boundary tag coalescing. Return ptr to coalesced block
  */
-
-// TODO express this explicitly in each case of coalesce, not as one function.
-static void insertFreeBlockAtBeginning(void* bp) {
-
-	// set the next of this block to the current, old, next.
-	// PUT(bp, GET_NEXT_FREE(free_list_root_p));
-	condprintf("\tuseful stats before: bp: %p, *bp: %x, free_list_root_p: %p, *free_list_root_p: %x\n",
-		bp, *(size_t*)bp, free_list_root_p, *(size_t*)free_list_root_p);
-
-	// only set a next if the next thing isn't the adjacent block itself
-	// this is exactly the same as when the root pointer's next is nothing (there's only 1 thing).
-	if(free_list_root_p != NEXT_BLKP(bp) && bp != free_list_root_p) {
-	    SET_NEXT_FREE(bp, free_list_root_p);
-	} else if(bp == free_list_root_p) {
-	  // case 3 hits here.
-	} else {
-	    // don't necessarily do this becasue case 3 it needs this link still.
-	    SET_NEXT_FREE(bp, 0);
-	    condprintf("There's only one thing currently in free_list_root_p, no next\n");
-	}
-
-
-	condprintf("\tuseful stats unbefore: bp: %p, *bp: %x, free_list_root_p: %p, *free_list_root_p: %x\n",
-		bp, *(size_t*)bp, free_list_root_p, *(size_t*)free_list_root_p);
-
-	// set prev to zero.
-	SET_PREV_FREE(bp, 0);
-
-	// set the next's previous to this, if there is a next.
-	if(GET_NEXT_FREE(bp) != 0) {
-	    condprintf("the next frees prev being set\n");
-	    SET_NEXT_FREES_PREV(bp, bp);
-	    condprintf("done with that\n");
-	}
-	// set the root pointer 
-	free_list_root_p = bp;
-
-	condprintf("\tuseful stats doubly unbefore: bp: %p, *bp: %x, free_list_root_p: %p, *free_list_root_p: %x\n",
-		bp, *(size_t*)bp, free_list_root_p, *(size_t*)free_list_root_p);
-}
-
-static void dissociateBlockFromList(void* bp) {
-
-    // condprintf("dissociating a block...\n");
-
-    size_t* prevThing = (size_t*)GET_PREV_FREE(bp);
-    size_t* nextThing = (size_t*)GET_NEXT_FREE(bp);
-    // case 1 - only right exists
-    if(!prevThing && nextThing) {
-	// set the next to refer to boundary, aka 0
-	SET_NEXT_FREES_PREV(bp, 0);
-	// update the root.
-	// free_list_root_p = nextThing;
-    }
-    // case 2 - only left exists
-    else if(prevThing && !nextThing) {
-	// set the prev to refer to boundary, aka 0
-	SET_PREV_FREES_NEXT(bp, 0);
-	// update the root to be zero.
-    }
-    // case 3 - both exist
-    else if(prevThing && nextThing) {
-	SET_NEXT_FREES_PREV(bp, prevThing);
-	SET_PREV_FREES_NEXT(bp, nextThing);
-    }
-    // else do nothing
-}
-
 static void *coalesce(void *bp) 
 {
-    // condprintf("prealesce...\n");
-    // printFreelist();
+    // // condprintf("prealesce...\n");
+    // //printFreelist();
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
-    // condprintf("going in.\n");
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    // condprintf("going in.\n");
     size_t size = GET_SIZE(HDRP(bp));
 
-    // condprintf("going in.\n");
-
-    if(!hasFinishedInit) {
-
-	condprintf("-coalesce case 0\n");
-	// set up the first free memory block with null refs to next and prev.
-	// PUT(GET(free_list_root_p), 0);
-	// PUT(GET(free_list_root_p + WSIZE), 0);
-	// condprintf("postalesce...\n");
-	printFreelist();
+    if(!hasFinishedInit) { /* Case 0 */
+	// condprintf("-coalesce case 0\n");
+	//printFreelist();
 	return bp;
     }
     else if (prev_alloc && next_alloc) {            /* Case 1 */
-	condprintf("-coalesce case 1\n");
+	// condprintf("-coalesce case 1\n");
 	// new
 	insertFreeBlockAtBeginning(bp);
-	// old
-	// condprintf("postalesce case 1...\n");
-	printFreelist();
+	//printFreelist();
 	return bp;
     }
 
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
-	
-	condprintf("-coalesce case 2\n");
-	// if free_list_root_p is same thing as the next block pointer
-	// same thing as: if there's only one item in the list
+	// condprintf("-coalesce case 2\n");
 
-	// new, for the right block pointer, link its prev and next 
-	// in order to dissociate it.
 	dissociateBlockFromList(NEXT_BLKP(bp));
 
-	// everything after the dissociation above is exactly the same as case one.
 	insertFreeBlockAtBeginning(bp);
 
 	// old
 	size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
 	PUT(HDRP(bp), PACK(size, 0));
 	PUT(FTRP(bp), PACK(size,0));
-
-
-	// condprintf("postalesce case 2...\n");
-	printFreelist();
     }
 
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
-	condprintf("-coalesce case 3\n");
-	// new, for the right block pointer, link its prev and next 
-	// in order to dissociate it.
+	// condprintf("-coalesce case 3\n");
+
 	dissociateBlockFromList(PREV_BLKP(bp));
 
 	// old
 	size += GET_SIZE(HDRP(PREV_BLKP(bp)));
 	PUT(FTRP(bp), PACK(size, 0));
 	PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-
 	bp = PREV_BLKP(bp);
 
 	// NOTE: this comes after because it needs to operate on the prev location.
-	// everything after the dissociation above is exactly the same as case one.
 	insertFreeBlockAtBeginning(bp);
-
-	// condprintf("postalesce case 3...\n");
-	printFreelist();
     }
 
     else {                                     /* Case 4 */
-	condprintf("-coalesce case 4\n");
-	// new, for the right block pointer, link its prev and next 
-	// in order to dissociate it.
+	// condprintf("-coalesce case 4\n");
+
 	dissociateBlockFromList(PREV_BLKP(bp));
 	dissociateBlockFromList(NEXT_BLKP(bp));
 
@@ -579,30 +504,23 @@ static void *coalesce(void *bp)
 	PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
 	bp = PREV_BLKP(bp);
 
-	// NOTE: this comes after because it needs to operate on the prev location.
-	// everything after the dissociation above is exactly the same as case one.
 	insertFreeBlockAtBeginning(bp);
-
-	// condprintf("postalesce case 4...\n");
-	printFreelist();
     }
 
-#ifdef NEXT_FIT
-    /* Make sure the rover isn't pointing into the free block */
-    /* that we just coalesced */
-    if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp))) 
-	rover = bp;
-#endif
-
+    //printFreelist();
     return bp;
 }
 
 
 
 static void printFreelist(void) {
-    condprintf("\tthe current list:\n");
+    // condprintf("\tthe current list:\n");
 
-    condprintf("\tfree_list_root_p: %p, *free_list_root_p: %x\n", free_list_root_p, *(size_t*)free_list_root_p);
+    if(free_list_root_p) {
+      // condprintf("\tfree_list_root_p: %p, *free_list_root_p: %x\n", free_list_root_p, *(size_t*)free_list_root_p);
+    } else {
+      // condprintf("\tfree_list_root_p = 0!!\n");
+    }
     // iterate across the free list and print the blocks.
     char *bp;
 
@@ -610,10 +528,10 @@ static void printFreelist(void) {
     // for(bp = free_list_root_p; GET_NEXT_FREE(bp) != 0; bp = GET_NEXT_FREE(bp))
     for(bp = free_list_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp))
     {
-	// condprintf("(next bp is %p)\n", bp);
+	// // condprintf("(next bp is %p)\n", bp);
 	printblockExtra(bp);
     }
-    // condprintf("(end of list)\n");
+    // // condprintf("(end of list)\n");
 }
 
 static void printblockExtra(void *bp) 
@@ -623,24 +541,24 @@ static void printblockExtra(void *bp)
     hsize = GET_SIZE(HDRP(bp));
     halloc = GET_ALLOC(HDRP(bp));  
 	
-    // condprintf("getting the footer\n");
+    // // condprintf("getting the footer\n");
     fsize = GET_SIZE(FTRP(bp));
-    // condprintf("got the footer\n");
+    // // condprintf("got the footer\n");
     falloc = GET_ALLOC(FTRP(bp));  
     next = GET_NEXT_FREE(bp);
     prev = GET_PREV_FREE(bp);  
     
     if (hsize == 0) {
-	condprintf("%p: EOL\n", bp);
+	// condprintf("%p: EOL\n", bp);
 	return;
     }
 
     condprintf("\t\t> bp: %p, *bp: %x, header: [%d:%c] footer: [%d:%c] next:%x prev: %x\n",
-	   bp, 
-	   *(size_t*)bp,
-	   hsize, (halloc ? 'a' : 'f'), 
-	   fsize, (falloc ? 'a' : 'f'),
-	   next, prev); 
+ 	   bp, 
+ 	   *(size_t*)bp,
+ 	   hsize, (halloc ? 'a' : 'f'), 
+ 	   fsize, (falloc ? 'a' : 'f'),
+ 	   next, prev); 
 }
 
 static void printblock(void *bp) 
