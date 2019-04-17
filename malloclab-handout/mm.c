@@ -1,28 +1,25 @@
 /* 
- * mm-implicit.c -  Simple allocator based on implicit free lists, 
- *                  first fit placement, and boundary tag coalescing. 
+ * Cannon Tuttle - tutt07
+ * Ethan Williams - ewilli24
  *
- * Each block has header and footer of the form:
- * 
- *      31                     3  2  1  0 
- *      -----------------------------------
- *     | s  s  s  s  ... s  s  s  0  0  a/f
- *      ----------------------------------- 
- * 
- * where s are the meaningful size bits and a/f is set 
- * iff the block is allocated. The list has the following form:
+ * This allocator uses segregated free-lists in order to store all the free blocks.
+ * We first implemented an explicit free-lists, then split it into two parts, and added conditions
+ * to have these parts become small and large sized free-lists independent of each other.
  *
- * begin                                                          end
- * heap                                                           heap  
- *  -----------------------------------------------------------------   
- * |  pad   | hdr(8:a) | ftr(8:a) | zero or more usr blks | hdr(8:a) |
- *  -----------------------------------------------------------------
- *          |       prologue      |                       | epilogue |
- *          |         block       |                       | block    |
+ * The free-lists store next and previous pointers in the first two words of the payload which are
+ * accessed and manipulated by various functions in this code.
  *
- * The allocated prologue and epilogue blocks are overhead that
- * eliminate edge conditions during coalescing.
+ * Our freelists have the format:
+ *
+ * +----------------------+--------+------+-----------+---------------------------------+---------+------------------+
+ * |         Word         |  Word  | Word |   Word    | free_list_(small|large)_pointer |  Word   |       Word       |
+ * +----------------------+--------+------+-----------+---------------------------------+---------+------------------+
+ * | (...Previous Footer) | Header | Next | Previous  | Data....                        | Footer  | (Next header...) |
+ * +----------------------+--------+------+-----------+---------------------------------+---------+------------------+
+ *
+ * See the function headers and bodies for more detailed information about the workings of the program.
  */
+
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -30,18 +27,12 @@
 #include "mm.h"
 #include "memlib.h"
 
-/*
- * If NEXT_FIT defined use next fit search, else use first fit search 
- */
-// #define NEXT_FIT 1
-
 /* Team structure */
 team_t team = {
     "tutt07+ewilli24",
     "Cannon Tuttle", "tutt07",
     "Ethan Williams", "ewilli24"
 }; 
-
 
 /* $begin mallocmacros */
 /* Basic constants and macros */
@@ -71,22 +62,26 @@ team_t team = {
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
+// gets the next or previous free block from the free list of bp
 #define GET_NEXT_FREE(bp) (size_t) GET(bp)
 #define GET_PREV_FREE(bp) (size_t) GET(bp + WSIZE)
 
+// sets the next or previous free block of bp
 #define SET_NEXT_FREE(bp, prevp) PUT(bp, (size_t)prevp)
 #define SET_PREV_FREE(bp, nextp) PUT(bp + WSIZE, (size_t)nextp)
 
+// sets this next to the next block and next's prev to this block
 #define CREATE_2WAY_LINK(thisbp, nextbp) SET_NEXT_FREE(thisbp, nextbp); SET_PREV_FREE(nextbp, thisbp)
 
+// checks size for segregated free-lists
 #define IS_SMALL(size) (size <= 192)
 
+// checks address to determine which free-list a block is in
 #define IS_IN_SMALL_REGION(ptr) ((char*)ptr < interlude_p)
 
+// prints error-checking code
 #define DEBUG_HEAPS(msg) \
 	condprintf("\tfree_list_small_root_p: " msg "\n");\
-	mm_checkheap(1);\
-	condprintf("\tfree_list_large_root_p: " msg "\n");\
 	mm_checkheap(1)
 
 /* $end mallocmacros */
@@ -96,9 +91,10 @@ char *free_list_small_root_p; // the segregated list pointer for small items: si
 char *free_list_large_root_p; // the segregated list pointer for the big items: size > 192
 char hasFinishedInit; // used for a special case of coalescing in the beginning.
 char* interlude_p; // used to delineate the two lists
+char *heap_listp;  /* pointer to first block */  
 
-
-int DEBUG_MODE = 0;
+// determines whether conditional prints run
+int DEBUG_MODE = 1;
 #define condprintf(str, ...) { \
   if(DEBUG_MODE) { \
     printf(str, ##__VA_ARGS__); \
@@ -110,7 +106,6 @@ static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
 static void *find_fit(size_t asize);
 static void *coalesce(void *bp);
-static void condPrintblock(void *bp); 
 static void checkblock(void *bp);
 
 // more helpers that we made 
@@ -118,15 +113,16 @@ static void dissociateBlockFromList(void* bp);
 static void insertFreeBlockAtBeginning(void* bp);
 static void condPrintblockExtra(void *bp);
 
-
+// forward dec of the checker
 void mm_checkheap(int verbose);
 
 /* 
- * mm_init - Initialize the memory manager 
+ * Initializes two free-lists by allocating space for smaller blocks in the first part of
+ * the heap. Keeps large and small blocks separate using a small allocated block in between
+ * the main sections of the heap. Initializes root pointers to the first two free blocks.
  */
 /* $begin mminit */
 int mm_init(void) {
-    char *heap_listp;  /* pointer to first block */  
 
     // handles a special case of coalescing. 
     hasFinishedInit = 0;
@@ -138,6 +134,8 @@ int mm_init(void) {
     PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */ 
     PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */ 
     PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
+
+    heap_listp += DSIZE;
 
     // 25 % of the heap storage initially is for the small list.
     if ((free_list_small_root_p = extend_heap(CHUNKSIZE/WSIZE/4)) == NULL)
@@ -169,12 +167,16 @@ int mm_init(void) {
     // handles a special case of coalescing.
     hasFinishedInit = 1;
 
+    // mm_checkheap(1);
     return 0;
 }
 /* $end mminit */
 
 /* 
- * mm_malloc - Allocate a block with at least size bytes of payload 
+ * Allocates a DWORD-aligned block with a payload of at least the specified size.
+ * First adjusts the size to ensure it is DWORD-aligned. Then searches free-lists for
+ * a fit. If it doesn't find a fit it extends the heap and finally allocates that
+ * space.
  */
 /* $begin mmmalloc */
 void *mm_malloc(size_t size) {
@@ -210,7 +212,9 @@ void *mm_malloc(size_t size) {
 /* $end mmmalloc */
 
 /* 
- * mm_free - Free a block 
+ * Removes a block from memory. Sets header and footer to free to show block is free
+ * and attempts to coalesce the newly freed blocks with surrounding free blocks if
+ * any.
  */
 /* $begin mmfree */
 void mm_free(void *bp)
@@ -231,6 +235,8 @@ void mm_free(void *bp)
  *      case 2: if there's a next free block and the combined storage
  *      is enough to store this block too, then coalesce with that block
  *      and store it here.
+ *      default: finds a different free block, copy the memory over,
+ *      and free the current block
  */
 void *mm_realloc(void *ptr, size_t size)
 {
@@ -338,51 +344,80 @@ void *mm_realloc(void *ptr, size_t size)
 }
 
 /* 
- * mm_checkheap - Check the heap for consistency 
+ * Checks the heap to determine if headers and footers are consistent
+ * and to see if blocks overlap. runs through both free-lists. Also 
+ * checks prologue header and footer as well as the epilogue header.
  */
 void mm_checkheap(int verbose) 
 {
+
+    printf("\n\n\nprinting the heap:\n");
+
+    // SMALL LIST
+    // ------
+    //
     char *bp = free_list_small_root_p;
 
+    // print the head information.
     if (verbose)
-	condprintf("\tHeap (%p):\n", free_list_small_root_p);
+	condprintf("\tfree_list_small_root_p (%p):\n", free_list_small_root_p);
 
-    if ((GET_SIZE(HDRP(free_list_small_root_p)) != DSIZE) || !GET_ALLOC(HDRP(free_list_small_root_p)))
-	printf("Bad prologue header in list\n");
-
+    // Iterate across the list and verify that each block is valid.
     for (bp = free_list_small_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp)) {
 	if (verbose) 
 	    condPrintblockExtra(bp);
 	checkblock(bp);
     }
-     
 
-    if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
-	printf("Bad epilogue header in list\n");
-
+    // LARGE LIST
+    // ------
+    //
     bp = free_list_large_root_p;
 
+
+    // print the head information.
     if (verbose)
-	condprintf("\tHeap (%p):\n", free_list_large_root_p);
+	condprintf("\tfree_list_large_root_p (%p):\n", free_list_large_root_p);
 
-    if ((GET_SIZE(HDRP(free_list_large_root_p)) != DSIZE) || !GET_ALLOC(HDRP(free_list_large_root_p)))
-	printf("Bad prologue header in list\n");
-
+    // Iterate across the list and verify that each block is valid.
     for (bp = free_list_large_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp)) {
 	if (verbose) 
 	    condPrintblockExtra(bp);
 	checkblock(bp);
     }
-     
 
+    // ENTIRE THING
+    bp = (char*) heap_listp;
+
+    // print the head information.
+    if (verbose)
+	printf("Heap (%p):\n", heap_listp);
+
+    // verify that the header works.
+    if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)))
+	printf("Bad prologue header\n");
+    checkblock(heap_listp);
+
+    // iterate over every block in the heap until the end, check the blocks.
+    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+	if (verbose) 
+	    condPrintblockExtra(bp);
+	checkblock(bp);
+    }
+     
+    // check the epilogue header
+    if (verbose)
+	condPrintblockExtra(bp);
     if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
-	printf("Bad epilogue header in list\n");
+	printf("Bad epilogue header\n");
+
 }
 
 /* The remaining routines are internal helper routines */
 
 /* 
- * extend_heap - Extend heap with free block and return its block pointer
+ * Extends the heap with a new free block, coalesces it with the heap if possible
+ * and returns its block pointer.
  */
 /* $begin mmextendheap */
 static void *extend_heap(size_t words) 
@@ -406,8 +441,9 @@ static void *extend_heap(size_t words)
 /* $end mmextendheap */
 
 /* 
- * place - Place block of asize bytes at start of free block bp 
- *         and split if remainder would be at least minimum block size
+ * Allocates a block at the specified free block. If there is a remainder
+ * it pushes the free block pointers to what is still free. Otherwise just
+ * dissociates the free block from the list.
  */
 /* $begin mmplace */
 /* $begin mmplace-proto */
@@ -472,7 +508,9 @@ static void place(void *bp, size_t asize)
 /* $end mmplace */
 
 /* 
- * find_fit - Find a fit for a block with asize bytes 
+ * Finds a fit for a new block. If it is small, first checks the small list. Then both
+ * small and large blocks check the large list. If there are no free blocks large enough,
+ * returns NULL to show need for extending the heap.
  */
 void *find_fit(size_t asize)
 {
@@ -496,6 +534,11 @@ void *find_fit(size_t asize)
     return NULL; // no fit found
 }
 
+/*
+ * Inserts a free block at the beginning of the appropriate free-list. If it is in
+ * the small region, places at beginning of the small free-list, otherwise in the 
+ * large free-list.
+*/
 static void insertFreeBlockAtBeginning(void* bp) {
 
     // case 1
@@ -534,6 +577,11 @@ static void insertFreeBlockAtBeginning(void* bp) {
     }
 }
 
+/*
+ * Removes a free block from the appropriate free-list, again using the region to
+ * determine which free-list to remove from. Special cases included for if there is
+ * no previous and/or next block.
+*/
 static void dissociateBlockFromList(void* bp) {
 
     // get refs to the links surrounding this block.
@@ -576,7 +624,9 @@ static void dissociateBlockFromList(void* bp) {
 
 
 /*
- * coalesce - boundary tag coalescing. Return ptr to coalesced block
+ * Attempts to combine a newly freed block with surrounding free blocks. Four
+ * cases based on whether the previous and next blocks are allocated or free.
+ * Includes modifying boundary tags based on size and which blocks were combined.
  */
 static void *coalesce(void *bp) 
 {
@@ -639,6 +689,9 @@ static void *coalesce(void *bp)
     return bp;
 }
 
+/*
+ * Prints helpful information about given block. Used for debugging.
+*/
 static void condPrintblockExtra(void *bp) 
 {
     size_t hsize, halloc, fsize, falloc, next, prev;
@@ -666,6 +719,10 @@ static void condPrintblockExtra(void *bp)
  	   next, prev); 
 }
 
+/*
+ * Checks if given block is DWORD-aligned and if header and footer match.
+ * Used for debugging.
+*/
 void checkblock(void *bp) 
 {
     if ((size_t)bp % 8) {
