@@ -85,10 +85,25 @@ team_t team = {
 
 #define CREATE_2WAY_LINK(thisbp, nextbp) SET_NEXT_FREE(thisbp, nextbp); SET_PREV_FREE(nextbp, thisbp)
 
+#define IS_SMALL(size) (size <= 192)
+
+#define IS_IN_SMALL_REGION(ptr) ((char*)ptr < interlude_p)
+
+#define DEBUG_HEAPS(msg) \
+	condprintf("\tfree_list_small_root_p: " msg "\n");\
+	mm_checkheap(free_list_small_root_p ,1);\
+	condprintf("\tfree_list_large_root_p: " msg "\n");\
+	mm_checkheap(free_list_large_root_p ,1)
+
 /* $end mallocmacros */
 
 /* Global variables */
-char *free_list_root_p;
+char *free_list_small_root_p;
+char *free_list_large_root_p;
+
+// interlude
+char* interlude_p;
+
 char *heap_listp;  /* pointer to first block */  
 
 int DEBUG_MODE = 0;
@@ -103,18 +118,21 @@ static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
 static void *find_fit(size_t asize);
 static void *coalesce(void *bp);
-static void printblock(void *bp); 
+static void condPrintblock(void *bp); 
 static void checkblock(void *bp);
 
 // more helpers that we made 
 static void dissociateBlockFromList(void* bp);
 static void insertFreeBlockAtBeginning(void* bp);
-static void printFreelist(void);
-static void printblockExtra(void *bp);
+// static void printFreelist(void);
+static void condPrintblockExtra(void *bp);
 
-static void printEntireBlock(void* bp);
+static void condPrintEntireBlock(void* bp);
 
 char hasFinishedInit;
+unsigned globalI;
+
+void mm_checkheap(void* ptr, int verbose);
 
 /* 
  * mm_init - Initialize the memory manager 
@@ -123,7 +141,8 @@ char hasFinishedInit;
 int mm_init(void) {
     // TODO this global jank 
     hasFinishedInit = 0;
-    condprintf("<MM_INIT>\n");
+    globalI = 0;
+//    condprintf("<MM_INIT>\n");
 
     /* create the initial empty heap */
     if ((heap_listp = mem_sbrk(4*WSIZE)) == NULL)
@@ -135,12 +154,47 @@ int mm_init(void) {
 
     heap_listp += DSIZE;
 
+
     // The free list will refer to the first free memory block.
-    free_list_root_p = heap_listp + DSIZE;
+    // free_list_small_root_p = heap_listp + DSIZE;
 
-
+    // 25 % of the way
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
-    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+    if ((free_list_small_root_p = extend_heap(CHUNKSIZE/WSIZE/4)) == NULL)
+	return -1;
+
+    SET_NEXT_FREE(free_list_small_root_p, 0);
+    SET_PREV_FREE(free_list_small_root_p, 0);
+
+//    condprintf("\njust got free_list_small_root_p: %p\n", free_list_small_root_p);
+
+//    // condPrintEntireBlock(free_list_small_root_p);
+//    mm_checkheap(free_list_small_root_p ,1);
+
+//    condprintf("\n\theap checked.\n");
+    interlude_p = NEXT_BLKP(free_list_small_root_p) - WSIZE - DSIZE;
+    PUT(interlude_p, PACK(OVERHEAD, 1)); /* interlude header */
+    PUT(interlude_p + WSIZE, PACK(OVERHEAD, 1)); /* interlude footer */
+
+    
+    size_t newSmallSize = (size_t)GET_SIZE(HDRP(free_list_small_root_p)) - (size_t)DSIZE;
+//    condprintf("\tnewSmallSize: %u\n", newSmallSize);
+    char smallAlloc = GET_ALLOC(HDRP(free_list_small_root_p));
+//    condprintf("\tsmallAlloc: %u\n", smallAlloc);
+
+
+    PUT(HDRP(free_list_small_root_p), PACK(newSmallSize, smallAlloc));
+    PUT(FTRP(free_list_small_root_p), PACK(newSmallSize, smallAlloc));
+
+//    condprintf("\njust modified free_list_small_root_p and put interlude in place:\n");
+
+//    mm_checkheap(free_list_small_root_p ,1);
+//    condprintf("\nfree_list_small_root_p: %p\n", free_list_small_root_p);
+//    condPrintEntireBlock(free_list_small_root_p);
+
+    // 75 % of the way
+    /* Extend the empty heap with a free block of CHUNKSIZE bytes */
+    if ((free_list_large_root_p = extend_heap(CHUNKSIZE/WSIZE/4 * 3)) == NULL)
 	return -1;
 
     // UNUSED
@@ -152,6 +206,13 @@ int mm_init(void) {
 
     // TODO this global jank 
     hasFinishedInit = 1;
+
+//    condprintf("trying to set the large ones\n");
+
+    SET_NEXT_FREE(free_list_large_root_p, 0);
+    SET_PREV_FREE(free_list_large_root_p, 0);
+
+//    DEBUG_HEAPS("at the end of init");
     return 0;
 }
 /* $end mminit */
@@ -162,10 +223,13 @@ int mm_init(void) {
 /* $begin mmmalloc */
 void *mm_malloc(size_t size) 
 {
-    condprintf("<MALLOC>\n");
+    globalI++;
+//    condprintf("<[%u] MALLOC size=%u>\n", globalI, size);
     size_t asize;      /* adjusted block size */
     size_t extendsize; /* amount to extend heap if no fit */
     char *bp;      
+
+//    DEBUG_HEAPS("at the start of malloc");
 
     /* Ignore spurious requests */
     if (size <= 0)
@@ -181,8 +245,10 @@ void *mm_malloc(size_t size)
     if ((bp = find_fit(asize)) != NULL) {
 	place(bp, asize);
 	//TODO prints
-	condprintf("at the end of malloc where we found a fit...\n");
-	printFreelist();
+//	condprintf("\tat the end of malloc where we found a fit...\n");
+	// printFreelist();
+//	DEBUG_HEAPS("at the end of malloc");
+
 	return bp;
     }
 
@@ -190,8 +256,9 @@ void *mm_malloc(size_t size)
     extendsize = MAX(asize,CHUNKSIZE);
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL) {
 	//TODO prints
-	condprintf("at the end of malloc after failing extending heap...\n");
-	printFreelist();
+//	condprintf("\tat the end of malloc after failing extending heap...\n");
+	// printFreelist();
+//	DEBUG_HEAPS("at the end of malloc");
 	return NULL;
     }
     place(bp, asize);
@@ -199,8 +266,9 @@ void *mm_malloc(size_t size)
     // rover = NEXT_BLKP(bp);
     //
     // TODO printing the freelist here.
-    condprintf("at the end of malloc after succeeding extending heap...\n");
-    printFreelist();
+//    condprintf("\tat the end of malloc after succeeding extending heap...\n");
+    // printFreelist();
+//    DEBUG_HEAPS("at the end of malloc");
     return bp;
 } 
 /* $end mmmalloc */
@@ -211,8 +279,8 @@ void *mm_malloc(size_t size)
 /* $begin mmfree */
 void mm_free(void *bp)
 {
-    condprintf("<FREE>\n");
-    // condprintf("freeing...\n");
+//    condprintf("<FREE>\n");
+//    // condprintf("freeing...\n");
     size_t size = GET_SIZE(HDRP(bp));
 
     PUT(HDRP(bp), PACK(size, 0));
@@ -227,17 +295,17 @@ void mm_free(void *bp)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-  condprintf("<REALLOC>\n");
+//  condprintf("<REALLOC size=%u>\n", size);
     // special cases to return early
     if(ptr == NULL) {
-      condprintf("trying malloc in realloc...\n");
+//      condprintf("\ttrying malloc in realloc...\n");
       void* newp;
-      condprintf("newp before: %p\n", newp);
+//      condprintf("\tnewp before: %p\n", newp);
       if ((newp = mm_malloc(size)) == NULL) {
 	  printf("ERROR: mm_malloc failed in mm_realloc\n");
 	  exit(1);
       }
-      condprintf("newp after: %p\n", newp);
+//      condprintf("\tnewp after: %p\n", newp);
       return newp;
     }
     if(size == 0) {
@@ -246,6 +314,7 @@ void *mm_realloc(void *ptr, size_t size)
       return 0;
     }
 
+    size_t asize;
 
     size_t firstWord = GET_NEXT_FREE(ptr);
     size_t secondWord = GET_PREV_FREE(ptr);
@@ -256,63 +325,79 @@ void *mm_realloc(void *ptr, size_t size)
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
     size_t thisBlockSize = GET_SIZE(HDRP(ptr));
 
-    condprintf("BEFORE:\n");
-    // printEntireBlock(ptr);
+    size_t nextBlockSize =  GET_SIZE(HDRP(NEXT_BLKP(ptr)));
+
+//    condprintf("\tcurrent block size: %u\n", thisBlockSize);
+//    condprintf("\tnext block size: %u\n", nextBlockSize);
+//    condprintf("\tbefore:\n");
+//    condPrintEntireBlock(ptr);
+
+//    DEBUG_HEAPS("start of realloc");
 
       // printf("boutta be doing crappy realloc");
       // new
       // see if this will fit into there.
-      if(thisBlockSize >= OVERHEAD + size) {
+    /* Adjust block size to include overhead and alignment reqs. */
 
-	  size_t duringCoalesceSize = GET_SIZE(HDRP(ptr));
-	  PUT(HDRP(ptr), PACK(duringCoalesceSize, 0));
-	  PUT(FTRP(ptr), PACK(duringCoalesceSize, 0));
+    if (size <= DSIZE)
+	asize = DSIZE + OVERHEAD;
+    else
+	asize = DSIZE * ((size + (OVERHEAD) + (DSIZE-1)) / DSIZE);
 
-	  condprintf("realloc fast case\n");
-	  insertFreeBlockAtBeginning(ptr);
-	  place(ptr, size + OVERHEAD);
+    if(thisBlockSize >= asize + OVERHEAD) {
 
-	  // re-substitute the memory that was at the next and prev locations.
-	  SET_NEXT_FREE(ptr, firstWord);
-	  SET_PREV_FREE(ptr, secondWord);
-	  // printf("first couple of data blocks: %x %x %x %x\n", *((char*)ptr-WSIZE), *((char*)ptr+ WSIZE), *((char*)ptr + 2 * WSIZE), *((char*)ptr + 3 * WSIZE));
-	  return ptr;
-      }
-//     else if (!next_alloc) {            /* Case 2 */
-// 
-// 	size_t duringCoalesceSize = GET_SIZE(HDRP(ptr));
-// 	PUT(HDRP(ptr), PACK(duringCoalesceSize, 0));
-// 	PUT(FTRP(ptr), PACK(duringCoalesceSize, 0));
-// 
-//       //printf("how rare is this peep");
-// 	condprintf("-coalesce case 2 and 4\n");
-// 	// part of old
-// 	thisBlockSize += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-// 
-// 	if(thisBlockSize >= OVERHEAD + size) {
-// 
-// 	    dissociateBlockFromList(NEXT_BLKP(ptr));
-// 
-// 	    insertFreeBlockAtBeginning(ptr);
-// 
-// 	    // old, but first line moved up
-// 	    PUT(HDRP(ptr), PACK(thisBlockSize, 0));
-// 	    PUT(FTRP(ptr), PACK(thisBlockSize, 0));
-// 
-// 	    // PUT(HDRP(ptr), PACK(thisBlockSize, 1));
-// 	    // PUT(FTRP(ptr), PACK(thisBlockSize, 1));
-// 
-// 	    // see if this will fit into there.
-// 	    place(ptr, size + OVERHEAD);
-// 
-// 	    // re-substitute the memory that was at the next and prev locations.
-// 	    SET_NEXT_FREE(ptr, firstWord);
-// 	    SET_PREV_FREE(ptr, secondWord);
-// 	    // printf("first couple of data blocks: %x %x %x %x\n", *((char*)ptr-WSIZE), *((char*)ptr+ WSIZE), *((char*)ptr + 2 * WSIZE), *((char*)ptr + 3 * WSIZE));
-// 	    printEntireBlock(ptr);
-// 	    return ptr;
-// 	}
-//     }
+	size_t duringCoalesceSize = GET_SIZE(HDRP(ptr));
+	PUT(HDRP(ptr), PACK(duringCoalesceSize, 0));
+	PUT(FTRP(ptr), PACK(duringCoalesceSize, 0));
+
+//	condprintf("realloc fast case\n");
+	insertFreeBlockAtBeginning(ptr);
+	place(ptr, asize + OVERHEAD);
+
+	// re-substitute the memory that was at the next and prev locations.
+	SET_NEXT_FREE(ptr, firstWord);
+	SET_PREV_FREE(ptr, secondWord);
+	// printf("first couple of data blocks: %x %x %x %x\n", *((char*)ptr-WSIZE), *((char*)ptr+ WSIZE), *((char*)ptr + 2 * WSIZE), *((char*)ptr + 3 * WSIZE));
+//	DEBUG_HEAPS("at end of realloc");
+	return ptr;
+    }
+    else if (!next_alloc && (thisBlockSize + nextBlockSize >= asize)) {            /* Case 2 */
+
+	size_t duringCoalesceSize = GET_SIZE(HDRP(ptr));
+	PUT(HDRP(ptr), PACK(duringCoalesceSize, 0));
+	PUT(FTRP(ptr), PACK(duringCoalesceSize, 0));
+
+	//printf("how rare is this peep");
+//	condprintf("\t-realloc simulating coalesce cases 2 and 4\n");
+	// part of old
+	thisBlockSize += nextBlockSize;
+
+	dissociateBlockFromList(NEXT_BLKP(ptr));
+
+	insertFreeBlockAtBeginning(ptr);
+
+	// old, but first line moved up
+	// free the current block
+	PUT(HDRP(ptr), PACK(thisBlockSize, 0));
+	PUT(FTRP(ptr), PACK(thisBlockSize, 0));
+
+	// PUT(HDRP(ptr), PACK(thisBlockSize, 1));
+	// PUT(FTRP(ptr), PACK(thisBlockSize, 1));
+
+	// see if this will fit into there.
+	place(ptr, asize);
+
+	// re-substitute the memory that was at the next and prev locations.
+	SET_NEXT_FREE(ptr, firstWord);
+	SET_PREV_FREE(ptr, secondWord);
+	// printf("first couple of data blocks: %x %x %x %x\n", *((char*)ptr-WSIZE), *((char*)ptr+ WSIZE), *((char*)ptr + 2 * WSIZE), *((char*)ptr + 3 * WSIZE));
+//	condprintf("\tafter:\n");
+//	condPrintEntireBlock(ptr);
+//	DEBUG_HEAPS("at end of realloc");
+	return ptr;
+    }
+
+//    condprintf("\trunning regular case in malloc...\n");
 
     void *newp;
     size_t copySize;
@@ -327,35 +412,34 @@ void *mm_realloc(void *ptr, size_t size)
       copySize = size;
     memcpy(newp, ptr, copySize);
     mm_free(ptr);
-    condprintf("after:\n");
-    // printEntireBlock(newp);
+//    condprintf("\tafter:\n");
+//    condPrintEntireBlock(newp);
+//    DEBUG_HEAPS("at end of realloc");
     return newp;
 }
 
 /* 
  * mm_checkheap - Check the heap for consistency 
  */
-void mm_checkheap(int verbose) 
+void mm_checkheap(void* start_ptr, int verbose) 
 {
-    char *bp = heap_listp;
+    char *bp = start_ptr;
 
     if (verbose)
-	printf("Heap (%p):\n", heap_listp);
+	condprintf("\tHeap (%p):\n", start_ptr);
 
-    if ((GET_SIZE(HDRP(heap_listp)) != DSIZE) || !GET_ALLOC(HDRP(heap_listp)))
-	printf("Bad prologue header\n");
-    checkblock(heap_listp);
+    if ((GET_SIZE(HDRP(start_ptr)) != DSIZE) || !GET_ALLOC(HDRP(start_ptr)))
+	printf("Bad prologue header in list\n");
 
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+    for (bp = start_ptr; bp != 0; bp = (char*)GET_NEXT_FREE(bp)) {
 	if (verbose) 
-	    printblock(bp);
+	    condPrintblockExtra(bp);
 	checkblock(bp);
     }
      
-    if (verbose)
-	printblock(bp);
+
     if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
-	printf("Bad epilogue header\n");
+	printf("Bad epilogue header in list\n");
 }
 
 /* The remaining routines are internal helper routines */
@@ -366,7 +450,7 @@ void mm_checkheap(int verbose)
 /* $begin mmextendheap */
 static void *extend_heap(size_t words) 
 {
-    condprintf("<EXTEND_HEAP\n");
+//    condprintf("<EXTEND_HEAP\n");
     char *bp;
     size_t size;
 	
@@ -394,13 +478,14 @@ static void *extend_heap(size_t words)
 static void place(void *bp, size_t asize)
 /* $end mmplace-proto */
 {
-    condprintf("<PLACE>\n");
+//    condprintf("<PLACE>\n");
+//    DEBUG_HEAPS("at start of place");
     size_t csize = GET_SIZE(HDRP(bp));   
 
     // TODO we changed this conditional to gurantee that places will have space for next and prev.
     if ((csize - asize) >= (DSIZE + OVERHEAD)) { 
 
-	condprintf("place case 1: splitting the block.\n");
+//	condprintf("\tplace case 1: splitting the block.\n");
 
 	
 	char* prevThing = (char*)GET_PREV_FREE(bp);
@@ -414,8 +499,13 @@ static void place(void *bp, size_t asize)
 	// X - Y - Z? -> X - shifted Y - Z?
 	
 	// case 1 specific
+//	DEBUG_HEAPS("before case 1 of place");
 	if(!prevThing) {
-	    free_list_root_p = adjustedBp;
+	    if(IS_IN_SMALL_REGION(bp)) {
+	      free_list_small_root_p = adjustedBp;
+	    } else {
+	      free_list_large_root_p = adjustedBp;
+	    }
 	}
 
 	// case 2 specific
@@ -438,20 +528,23 @@ static void place(void *bp, size_t asize)
 	PUT(HDRP(bp), PACK(csize-asize, 0));
 	PUT(FTRP(bp), PACK(csize-asize, 0));
 
+//	DEBUG_HEAPS("after the old code");
+
     }
     else { 
-	condprintf("place case 2: using the entire block.\n");
+//	condprintf("\tplace case 2: using the entire block.\n");
 
-	printFreelist();
+	// printFreelist();
 	// new, link the things on the left and right.
 	dissociateBlockFromList(bp);
 
-	condprintf("root p:%p\n", free_list_root_p);
-	printFreelist();
+//	// condprintf("root p:%p\n", free_list_small-root_p);
+	// printFreelist();
 	// old
 	PUT(HDRP(bp), PACK(csize, 1));
 	PUT(FTRP(bp), PACK(csize, 1));
     }
+//    DEBUG_HEAPS("at end of place");
 }
 /* $end mmplace */
 
@@ -462,19 +555,31 @@ void *find_fit(size_t asize)
 {
 
     // EXPLICIT FREE LIST SEARCH
-    condprintf("<FIND_FIT>\n");
+//    condprintf("<FIND_FIT>\n");
     
     char *bp;
 
     // iterate across the free  list, find a spot  that is big enough, and use this.
-    // for(bp = free_list_root_p; GET_NEXT_FREE(bp) != 0; bp = GET_NEXT_FREE(bp))
-    for(bp = free_list_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp))
+    if(IS_SMALL(asize)) {
+      for(bp = free_list_small_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp)) {
+//	  // condprintf("\t iterating in find_fit... bp = %p\n", bp);
+	  if(asize <= GET_SIZE(HDRP(bp))) {
+//	      condprintf("\tfound the fit in SMALL!\n");
+	      return bp;
+	  }
+      }
+//      condprintf("FILLED UP SMALL LIST");
+    }
+
+
+    // fallthrough to the larger freelist.
+    
+    for(bp = free_list_large_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp))
     {
-	// condprintf("\t iterating in find_fit... bp = %p\n", bp);
-	// condprintf("spinning");
+//	// condprintf("\t iterating in find_fit... bp = %p\n", bp);
 	if(asize <= GET_SIZE(HDRP(bp)))
 	{
-	    condprintf("\tfound the fit!\n");
+//	    condprintf("\tfound the fit in LARGE!\n");
 	    return bp;
 	}
     }
@@ -484,24 +589,40 @@ void *find_fit(size_t asize)
 static void insertFreeBlockAtBeginning(void* bp) {
     // case 1
     // (root)null -> (root)X, X.prev = 0, X.next = 0
-    if(!free_list_root_p) {
-      free_list_root_p = bp;
-      SET_PREV_FREE(bp, 0);
-      SET_NEXT_FREE(bp, 0);
-    }
+    if(IS_IN_SMALL_REGION(bp)) {
+      if(!free_list_small_root_p) {
+	free_list_small_root_p = bp;
+	SET_PREV_FREE(bp, 0);
+	SET_NEXT_FREE(bp, 0);
+      }
 
-    // case 2
-    // (root)Y -> (root)X, X <=> Y, X.prev = 0, 
-    else {
-      SET_PREV_FREE(bp, 0);
-      CREATE_2WAY_LINK(bp, free_list_root_p);
-      free_list_root_p = bp;
+      // case 2
+      // (root)Y -> (root)X, X <=> Y, X.prev = 0, 
+      else {
+	SET_PREV_FREE(bp, 0);
+	CREATE_2WAY_LINK(bp, free_list_small_root_p);
+	free_list_small_root_p = bp;
+      }
+    } else {
+      if(!free_list_large_root_p) {
+	free_list_large_root_p = bp;
+	SET_PREV_FREE(bp, 0);
+	SET_NEXT_FREE(bp, 0);
+      }
+
+      // case 2
+      // (root)Y -> (root)X, X <=> Y, X.prev = 0, 
+      else {
+	SET_PREV_FREE(bp, 0);
+	CREATE_2WAY_LINK(bp, free_list_large_root_p);
+	free_list_large_root_p = bp;
+      }
     }
 }
 
 static void dissociateBlockFromList(void* bp) {
 
-    // condprintf("dissociating a block...\n");
+//    // condprintf("dissociating a block...\n");
 
     char* prevThing = (char*)GET_PREV_FREE(bp);
     char* nextThing = (char*)GET_NEXT_FREE(bp);
@@ -509,27 +630,45 @@ static void dissociateBlockFromList(void* bp) {
     // Case 1
     //  (root)Y - Z -> (root)Z
     if(!prevThing && nextThing) {
+//	condprintf("\tcase 1 dissocation\n");
 	SET_PREV_FREE(nextThing, 0);
-	free_list_root_p = nextThing;
+
+	if(IS_IN_SMALL_REGION(bp)) {
+//	  condprintf("\thit the small region...\n");
+	  free_list_small_root_p = nextThing;
+	} else {
+//	  condprintf("\thit the large region...\n");
+	  free_list_large_root_p = nextThing;
+	}
     }
 
     // case 2
     // X - Y - O -> X
     else if(prevThing && !nextThing) {
+//	condprintf("\tcase 2 dissocation\n");
+//	condprintf("\tprevThing: %p\n", prevThing);
 	SET_NEXT_FREE(prevThing, 0);
     }
 
     // case 3
     // X - Y - Z -> X ---- Z
     else if(prevThing && nextThing) {
+//	condprintf("\tcase 3 dissocation\n");
+//	condprintf("\tprevThing: %p\n", prevThing);
+//	condprintf("\tnextThing: %p\n", nextThing);
 	CREATE_2WAY_LINK(prevThing, nextThing);
     }
 
     // case 4
     // (root)Y -> (root is null)
     else {
-	// condprintf("hitting the zero case\n");
-	free_list_root_p = 0;
+//	condprintf("\tcase 4 dissocation\n");
+//	// condprintf("hitting the zero case\n");
+	if(IS_IN_SMALL_REGION(bp)) {
+	  free_list_small_root_p = 0;
+	} else {
+	  free_list_large_root_p = 0;
+	}
     }
 }
 
@@ -539,25 +678,23 @@ static void dissociateBlockFromList(void* bp) {
  */
 static void *coalesce(void *bp) 
 {
-    // condprintf("prealesce...\n");
-    printFreelist();
+//    // condprintf("prealesce...\n");
+    // printFreelist();
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
     if(!hasFinishedInit) { // Case 0 
-	condprintf("-coalesce case 0\n");
-	SET_NEXT_FREE(free_list_root_p, 0);
-	SET_PREV_FREE(free_list_root_p, 0);
+//	condprintf("\t-coalesce case 0\n");
     }
     else if (prev_alloc && next_alloc) {            /* Case 1 */
-	condprintf("-coalesce case 1\n");
+//	condprintf("\t-coalesce case 1\n");
 	// new
 	insertFreeBlockAtBeginning(bp);
     }
 
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
-	condprintf("-coalesce case 2\n");
+//	condprintf("\t-coalesce case 2\n");
 
 	dissociateBlockFromList(NEXT_BLKP(bp));
 
@@ -570,10 +707,11 @@ static void *coalesce(void *bp)
     }
 
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
-	condprintf("-coalesce case 3\n");
+//	condprintf("\t-coalesce case 3\n");
 
 	dissociateBlockFromList(PREV_BLKP(bp));
 
+//	condprintf("\tafter dissociation in case 3 of coalesce\n");
 	// old
 	size += GET_SIZE(HDRP(PREV_BLKP(bp)));
 	PUT(FTRP(bp), PACK(size, 0));
@@ -585,7 +723,7 @@ static void *coalesce(void *bp)
     }
 
     else {                                     /* Case 4 */
-	condprintf("-coalesce case 4\n");
+//	condprintf("-coalesce case 4\n");
 
 	dissociateBlockFromList(PREV_BLKP(bp));
 	dissociateBlockFromList(NEXT_BLKP(bp));
@@ -600,53 +738,54 @@ static void *coalesce(void *bp)
 	insertFreeBlockAtBeginning(bp);
     }
 
-    printFreelist();
+//    condprintf("\tfinished coalesce\n");
+    // printFreelist();
     return bp;
 }
 
 
 
-static void printFreelist(void) {
-    condprintf("\tthe current list:\n");
-
-    if(free_list_root_p) {
-      condprintf("\tfree_list_root_p: %p, *free_list_root_p: %x\n", free_list_root_p, *(size_t*)free_list_root_p);
-    } else {
-      condprintf("\tfree_list_root_p = 0!!\n");
-    }
-    // iterate across the free list and print the blocks.
-    char *bp;
-
-    // iterate across the free  list, find a spot  that is big enough, and use this.
-    // for(bp = free_list_root_p; GET_NEXT_FREE(bp) != 0; bp = GET_NEXT_FREE(bp))
-//     for(bp = free_list_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp))
-//     {
-// 	// condprintf("(next bp is %p)\n", bp);
-// 	printblockExtra(bp);
+// static void printFreelist(void) {
+////     condprintf("\tthe current list:\n");
+// 
+//     if(free_list_root_p) {
+////       condprintf("\tfree_list_root_p: %p, *free_list_root_p: %x\n", free_list_root_p, *(size_t*)free_list_root_p);
+//     } else {
+////       condprintf("\tfree_list_root_p = 0!!\n");
 //     }
-    // condprintf("(end of list)\n");
-}
+//     // iterate across the free list and print the blocks.
+//     char *bp;
+// 
+//     // iterate across the free  list, find a spot  that is big enough, and use this.
+//     // for(bp = free_list_root_p; GET_NEXT_FREE(bp) != 0; bp = GET_NEXT_FREE(bp))
+// //     for(bp = free_list_root_p; bp != 0; bp = (char*)GET_NEXT_FREE(bp))
+// //     {
+//// // 	// condprintf("(next bp is %p)\n", bp);
+// // 	condPrintblockExtra(bp);
+// //     }
+////     // condprintf("(end of list)\n");
+// }
 
-static void printblockExtra(void *bp) 
+static void condPrintblockExtra(void *bp) 
 {
     size_t hsize, halloc, fsize, falloc, next, prev;
 
     hsize = GET_SIZE(HDRP(bp));
     halloc = GET_ALLOC(HDRP(bp));  
 	
-    // condprintf("getting the footer\n");
+    // printf("getting the footer\n");
     fsize = GET_SIZE(FTRP(bp));
-    // condprintf("got the footer\n");
+    // printf("got the footer\n");
     falloc = GET_ALLOC(FTRP(bp));  
     next = GET_NEXT_FREE(bp);
     prev = GET_PREV_FREE(bp);  
     
     if (hsize == 0) {
-	condprintf("%p: EOL\n", bp);
+	printf("\t%p: EOL\n", bp);
 	return;
     }
 
-    condprintf("\t\t> bp: %p, *bp: %x, header: [%d:%c] footer: [%d:%c] next:%x prev: %x\n",
+    printf("\t\t> bp: %p, *bp: %x, header: [%d:%c] footer: [%d:%c] next:%x prev: %x\n",
  	   bp, 
  	   *(size_t*)bp,
  	   hsize, (halloc ? 'a' : 'f'), 
@@ -654,7 +793,7 @@ static void printblockExtra(void *bp)
  	   next, prev); 
 }
 
-static void printblock(void *bp) 
+static void condPrintblock(void *bp) 
 {
     size_t hsize, halloc, fsize, falloc;
 
@@ -675,20 +814,42 @@ static void printblock(void *bp)
 
 void checkblock(void *bp) 
 {
-    if ((size_t)bp % 8)
+//  printf("starting block bp=%p\n", bp);
+    if ((size_t)bp % 8) {
 	printf("Error: %p is not doubleword aligned\n", bp);
-    if (GET(HDRP(bp)) != GET(FTRP(bp)))
+	exit(1);
+    }
+    if (GET(HDRP(bp)) != GET(FTRP(bp))) {
 	printf("Error: header does not match footer\n");
+	exit(1);
+    }
+  // printf("ending block bp=%p\n", bp);
 }
 
-static void printEntireBlock(void* bp) {
-  int i = 0;
-  printf("\tbp=%p\n", bp);
+static void condPrintEntireBlock(void* bp) {
+  unsigned i = 0;
   printf("\theader=%x\n", *HDRP(bp));
-  for(void* index = bp; index <= FTRP(bp); index+=WSIZE) {
-    printf("%x, ", *(char*)index);
+  printf("\tbp=%p\n\t...", bp);
+  for(void* index = bp-WSIZE-20; (char*)index < (char*)HDRP(bp); index+=WSIZE) {
+    printf("%x,", *(char*)index);
+  }
+  printf("[");
+  for(void* index = bp-WSIZE; (char*)index <= (char*)FTRP(bp); index+=WSIZE) {
+    if(i < 5) {
+      printf("%x,", *(char*)index);
+    }
     i++;
   }
-  printf("\tfooter: %x\n", *FTRP(bp));
-  printf("i: %x\n", i);
+  printf("...");
+  for(void* index = bp-WSIZE; (char*)index <= (char*)FTRP(bp); index+=WSIZE) {
+    if((char*)FTRP(bp) - (char*)index < 5*WSIZE) {
+      printf("%x,", *(char*)index);
+    }
+  }
+  printf("\b],");
+  for(void* index = FTRP(bp)+WSIZE; (char*)index < (char*)FTRP(bp) + 24; index+=WSIZE) {
+    printf("%x,", *(char*)index);
+  }
+  printf("\b...\n\tfooter: %x\n", *FTRP(bp));
+  printf("\ti: %u\n", i);
 }
